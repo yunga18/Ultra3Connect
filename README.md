@@ -176,3 +176,14 @@ Se analizó el registro HCI enviado por el propietario el 10 de noviembre de 202
 - Para GATT 19 se indica que la desconexión fue remota (causa específica no determinada). Botón **Reconectar último Ultra 3** disponible al desconectarse, sin reintentos automáticos ni bucles.
 - Conserva la prueba de notificación manual con icono WhatsApp y la lectura de batería y salud existentes.
 - Cambios de sonido, tonos y firmware **no** forman parte de esta versión.
+
+## Versión 1.2.1 — Diagnóstico y estabilidad del enlace BLE
+- El usuario confirmó que las notificaciones ficticias funcionan, pero las notificaciones reales no llegan y el enlace se desconecta en ocasiones.
+- **Activación UART automática** al descubrir el servicio BLE: ya no depende del botón manual para empezar a recibir respuestas y reenviar avisos.
+- Se serializa la escritura del descriptor CCCD antes de la lectura de batería para evitar dos operaciones GATT simultáneas.
+- **Reconexión controlada ante GATT 19**: máximo 3 intentos con esperas crecientes, nunca si el usuario pulsó Desconectar. Solo reconecta a la dirección del reloj previamente seleccionada. No se intenta en bucle indefinido.
+- La pestaña **Avisos** presenta cuántos eventos de aplicaciones compatibles detectó Android, el estado del listener, cuántos se intentaron transmitir y cuántos se descartaron, más el número de cierres GATT 19.
+- **WhatsApp MessagingStyle**: el listener intenta extraer el último mensaje de la notificación si `EXTRA_TEXT` / `EXTRA_BIG_TEXT` no tienen contenido.
+- Se siguen excluyendo resúmenes, categorías no seleccionadas y mensajes identificados como sensibles, sin registrar ni guardar contenido de notificaciones.
+- **Limitación importante**: aún no hay un servicio Bluetooth en primer plano persistente. Esta versión se valida inicialmente con la aplicación abierta; no se debe prometer entrega fiable al estar la pantalla apagada o la aplicación cerrada.
+- Los comandos de inicialización y mensajes periódicos específicos de HryFine observados en la traza HCI aún requieren investigación. No se enviaron comandos desconocidos.
