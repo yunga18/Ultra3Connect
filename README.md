@@ -112,3 +112,11 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 - Cuarta prueba unitaria con las tramas capturadas a las 11:20:12 y 11:21:31; incremento hexadecimal 79 en el campo candidato, acorde con los 78,723 segundos transcurridos.
 - Referencia externa de la hipótesis de subcomandos: https://github.com/victorbillyph/chinese-smartwatch-homeassistant/blob/main/docs/PROTOCOL.md
 - No habilita comandos OTA, reseteos, ajustes ni escrituras propietarias.
+
+## Versión 0.8.0 — Lecturas experimentales sujetas a verificación
+- En **Servicios** se muestran el último pulso candidato y la última presión candidata del reloj: son **hipótesis**, no lecturas certificadas ni datos médicos.
+- Interpreta exclusivamente tramas DF completas y con checksum válido, CMD 05 / SUB 04 con un posible valor de pulso en el último byte y CMD 05 / SUB 05 con dos posibles valores de presión en los últimos dos bytes.
+- Usa comprobaciones de rango razonable para evitar presentar paquetes evidentemente incompatibles. La validación del protocolo real requiere comparar con la pantalla del reloj.
+- Los datos mostrados son temporales en memoria y se borran al reconectar; no se comparten con servicios de terceros.
+- Pruebas unitarias con los dos mensajes reales de 11:31 y un paquete con checksum alterado.
+- Sin nuevos comandos Bluetooth, sin escrituras al protocolo propietario y sin actualizaciones OTA.

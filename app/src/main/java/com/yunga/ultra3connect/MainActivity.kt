@@ -85,6 +85,8 @@ class MainActivity : ComponentActivity() {
     private var dfFrameCount by mutableIntStateOf(0)
     private var dfVerifiedCount by mutableIntStateOf(0)
     private val dfFrameMessages = mutableStateListOf<String>()
+    private var heartCandidate by mutableStateOf("Sin datos")
+    private var pressureCandidate by mutableStateOf("Sin datos")
     private var lastCounterCandidate: Int? = null
     private var lastCounterTimestampMs: Long? = null
     private var extraState by mutableStateOf("Sin activar")
@@ -303,6 +305,8 @@ class MainActivity : ComponentActivity() {
                     dfFrameCount = dfFrameCount,
                     dfVerifiedCount = dfVerifiedCount,
                     dfFrameMessages = dfFrameMessages.toList(),
+                    heartCandidate = heartCandidate,
+                    pressureCandidate = pressureCandidate,
                     extraState = extraState,
                     extraSubscribed = extraSubscribed,
                     extraBusy = extraPendingEnabled != null,
@@ -451,6 +455,8 @@ class MainActivity : ComponentActivity() {
             dfFrameCount = 0
             dfVerifiedCount = 0
             dfFrameMessages.clear()
+            heartCandidate = "Sin datos"
+            pressureCandidate = "Sin datos"
             lastCounterCandidate = null
             lastCounterTimestampMs = null
             uartState = "Sin activar"
@@ -543,10 +549,19 @@ class MainActivity : ComponentActivity() {
                     lastCounterTimestampMs = timeNow
                     " · campo15-16=%04X".format(Locale.US, counterCandidate) + deltaNote
                 } else ""
+                val experimentalReading = ExperimentalVitalDecoder.decode(frame)
+                if (experimentalReading != null) {
+                    when (experimentalReading.kind) {
+                        ExperimentalVitalDecoder.Kind.HEART_RATE ->
+                            heartCandidate = experimentalReading.valueLabel
+                        ExperimentalVitalDecoder.Kind.BLOOD_PRESSURE ->
+                            pressureCandidate = experimentalReading.valueLabel
+                    }
+                }
                 val label = "CMD=%02X SUB=%02X payload=%d checksum=%s [%s]%s".format(
                     Locale.US, frame.command, frame.subcommand,
                     frame.actualPayloadLength, result, possibleKind, counterNote
-                )
+                ) + (experimentalReading?.let { " · candidato=${it.valueLabel}" } ?: "")
                 val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
                 dfFrameMessages.add(0, timestamp + " · " + label + "\n" + frame.bytes.toHex())
                 while (dfFrameMessages.size > 40) dfFrameMessages.removeAt(dfFrameMessages.lastIndex)
@@ -708,6 +723,7 @@ private fun UltraApp(
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
     dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
+    heartCandidate: String, pressureCandidate: String,
     extraState: String, extraSubscribed: Boolean, extraBusy: Boolean,
     extraCount: Int, extraMessages: List<String>,
     rssiFor: (String) -> Int?,
@@ -737,8 +753,8 @@ private fun UltraApp(
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
                     uartBusy || extraBusy, uartCount, uartMessages,
-                    dfFrameCount, dfVerifiedCount, dfFrameMessages, onToggleUart, onMarkEvent,
-                    extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
+                    dfFrameCount, dfVerifiedCount, dfFrameMessages, heartCandidate, pressureCandidate,
+                    onToggleUart, onMarkEvent, extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
                 )
                 else -> LogScreen(logLines)
             }
@@ -825,12 +841,28 @@ private fun ServicesScreen(
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
     dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
+    heartCandidate: String, pressureCandidate: String,
     onToggleUart: () -> Unit, onMarkEvent: (String) -> Unit,
     extraState: String, extraSubscribed: Boolean, extraCount: Int,
     extraMessages: List<String>, onToggleExtra: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
 ) {
     val context = LocalContext.current
+    Text("LECTURAS EXPERIMENTALES", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(8.dp))
+    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text("Pulso candidato: $heartCandidate", fontWeight = FontWeight.SemiBold, color = Color.White)
+            Spacer(Modifier.height(5.dp))
+            Text("Presión candidata: $pressureCandidate", fontWeight = FontWeight.SemiBold, color = Color.White)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Son valores inferidos de tramas CMD 05 (SUB 04/05), no lecturas confirmadas ni datos para decisiones médicas. Compara con la pantalla del reloj.",
+                color = Muted, fontSize = 11.sp
+            )
+        }
+    }
+    Spacer(Modifier.height(14.dp))
     Text("RECEPCIÓN UART", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
     Spacer(Modifier.height(8.dp))
     Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
