@@ -64,10 +64,12 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.isNotEmpty() && result.values.all { it }) {
+            val denied = result.filterValues { !it }.keys
+            if (result.isNotEmpty() && denied.isEmpty()) {
+                addLog("Permisos BLE y ubicación concedidos")
                 startScan()
             } else {
-                status = "Permisos de dispositivos cercanos denegados"
+                status = "Permisos pendientes: " + denied.joinToString { it.substringAfterLast('.') }
                 addLog(status)
             }
         }
@@ -109,18 +111,35 @@ class MainActivity : ComponentActivity() {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, statusCode: Int, newState: Int) {
             runOnUiThread {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    connected = true
-                    status = "Conectado · descubriendo servicios"
-                    addLog("Conexión establecida")
-                    g.discoverServices()
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    connected = false
-                    services.clear()
-                    status = "Desconectado"
-                    addLog("Desconectado (estado $statusCode)")
-                    g.close()
-                    if (gatt === g) gatt = null
+                if (gatt !== g) {
+                    addLog("Evento antiguo descartado: GATT=$statusCode, state=$newState")
+                    try { g.close() } catch (_: Exception) {}
+                    return@runOnUiThread
+                }
+                addLog("GATT callback: status=$statusCode, newState=$newState")
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> {
+                        connected = true
+                        status = "BLE conectado · status=$statusCode · descubriendo servicios"
+                        addLog("Conexión GATT abierta, solicitando servicios")
+                        try {
+                            val sent = g.discoverServices()
+                            addLog("discoverServices enviado=$sent")
+                            if (!sent) status = "Fallo solicitando servicios GATT"
+                        } catch (e: Exception) {
+                            status = "Error descubrimiento GATT: " + (e.message ?: e.javaClass.simpleName)
+                            addLog(status)
+                        }
+                    }
+                    BluetoothProfile.STATE_DISCONNECTED -> {
+                        connected = false
+                        services.clear()
+                        status = "BLE desconectado · GATT status=$statusCode"
+                        addLog("Desconectado: status=$statusCode (conserva este dato para diagnóstico)")
+                        try { g.close() } catch (_: Exception) {}
+                        if (gatt === g) gatt = null
+                    }
+                    else -> addLog("Estado GATT intermedio: " + newState)
                 }
             }
         }
@@ -202,13 +221,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestPermissionsAndScan() {
+        // Full BLE scan: request location rather than using neverForLocation,
+        // which can filter some BLE advertisements.
         val permissions = if (Build.VERSION.SDK_INT >= 31) arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION
         ) else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         val missing = permissions.filter {
             checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray()) else startScan()
+        if (missing.isNotEmpty()) {
+            addLog("Solicitando: " + missing.joinToString { it.substringAfterLast('.') })
+            permissionLauncher.launch(missing.toTypedArray())
+        } else startScan()
     }
 
     @SuppressLint("MissingPermission")
@@ -221,10 +247,10 @@ class MainActivity : ComponentActivity() {
             addLog(status)
             return
         }
-        if (Build.VERSION.SDK_INT in 28..30) {
+        if (Build.VERSION.SDK_INT >= 28) {
             val location = getSystemService(LOCATION_SERVICE) as LocationManager
             if (!location.isLocationEnabled) {
-                status = "Activa Ubicación del teléfono para el escaneo BLE"
+                status = "Activa Ubicación del teléfono para encontrar el reloj BLE"
                 addLog(status)
                 return
             }
@@ -336,7 +362,10 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     private fun disconnect() {
-        try { gatt?.disconnect() } catch (_: SecurityException) {}
+        addLog("Desconexión solicitada por el usuario")
+        try { gatt?.disconnect() } catch (_: SecurityException) {
+            addLog("Permiso denegado al desconectar")
+        }
     }
 
     @SuppressLint("MissingPermission")

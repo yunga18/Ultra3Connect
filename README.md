@@ -60,3 +60,19 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 4. En Android 11 o anterior también activa Ubicación del dispositivo.
 5. Si aparece en nRF Connect y no aquí, consulta **Registro** en nuestra app.
 6. La opción de dirección manual usa la dirección **LE**, no la de Bluetooth clásico, y puede fallar si la dirección del reloj cambia.
+
+## Versión 0.3.0 — Permisos y estabilidad BLE
+- La búsqueda solicita permisos de **Dispositivos cercanos** y **Ubicación precisa** para permitir resultados BLE completos en Android 12+ sin filtrar anuncios de periféricos.
+- La app no consulta coordenadas GPS ni envía ubicaciones; el permiso se usa exclusivamente para el descubrimiento BLE.
+- El escaneo informa si la opción global Ubicación está desactivada.
+- El registro muestra los códigos de estado GATT de conexión/desconexión y si discoverServices pudo solicitarse.
+- Se ignoran callbacks antiguos de conexiones anteriores para que no alteren la conexión nueva.
+- No se implementa auto-reconexión hasta conocer el motivo exacto de la desconexión.
+
+### Prueba de diagnóstico
+1. Cierra HryFine y desconecta nRF Connect; mantén el reloj encendido.
+2. Enciende Bluetooth y Ubicación del teléfono.
+3. Concede Dispositivos cercanos y Ubicación precisa a Ultra 3 Connect.
+4. Pulsa Buscar reloj. Si no aparece, entra en Registro y revisa el motivo.
+5. Si no aparece, prueba la dirección LE que termina en 4B.
+6. Si se desconecta, anota el dato `GATT status=...` del Registro. El estado no identifica por sí solo el origen del problema.
