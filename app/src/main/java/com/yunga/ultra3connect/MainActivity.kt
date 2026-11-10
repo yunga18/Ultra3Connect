@@ -97,6 +97,9 @@ class MainActivity : ComponentActivity() {
     private var measurementRequestStatus by mutableStateOf("Activa la recepción UART antes de iniciar una medición")
     private var pendingMeasurement by mutableStateOf<ExperimentalVitalDecoder.Kind?>(null)
     private var measurementRequestToken = 0
+    private var notifyTestBusy by mutableStateOf(false)
+    private var notifyTestStatus by mutableStateOf("Prueba manual sin acceso a tus mensajes")
+    private var notifyTestToken = 0
     private var lastCounterCandidate: Int? = null
     private var lastCounterTimestampMs: Long? = null
     private var extraState by mutableStateOf("Sin activar")
@@ -183,6 +186,9 @@ class MainActivity : ComponentActivity() {
                         pendingMeasurement = null
                         measurementRequestToken++
                         measurementRequestStatus = "Sin conexión con el reloj"
+                        notifyTestToken++
+                        notifyTestBusy = false
+                        notifyTestStatus = "Desconectado"
                         extraSubscribed = false
                         extraPendingEnabled = null
                         extraState = "Desconectado"
@@ -350,6 +356,9 @@ class MainActivity : ComponentActivity() {
                     measurementRequestStatus = measurementRequestStatus,
                     measurementInProgress = pendingMeasurement != null,
                     onRequestMeasurement = { requestWatchMeasurement(it) },
+                    notifyTestStatus = notifyTestStatus,
+                    notifyTestBusy = notifyTestBusy,
+                    onNotifyTest = { sendNotificationTest() },
                     extraState = extraState,
                     extraSubscribed = extraSubscribed,
                     extraBusy = extraPendingEnabled != null,
@@ -503,6 +512,9 @@ class MainActivity : ComponentActivity() {
             pendingMeasurement = null
             measurementRequestToken++
             measurementRequestStatus = "Activa la recepción UART antes de iniciar una medición"
+            notifyTestToken++
+            notifyTestBusy = false
+            notifyTestStatus = "Prueba manual sin acceso a tus mensajes"
             lastCounterCandidate = null
             lastCounterTimestampMs = null
             uartState = "Sin activar"
@@ -766,7 +778,7 @@ class MainActivity : ComponentActivity() {
             measurementRequestStatus = "Conecta el reloj y activa primero la recepción UART"
             return
         }
-        if (pendingMeasurement != null || uartPendingEnabled != null || extraPendingEnabled != null) {
+        if (pendingMeasurement != null || uartPendingEnabled != null || extraPendingEnabled != null || notifyTestBusy) {
             measurementRequestStatus = "Ya hay una medición u operación Bluetooth en curso"
             return
         }
@@ -820,6 +832,74 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+    @SuppressLint("MissingPermission")
+    private fun sendNotificationTest() {
+        val current = gatt
+        if (current == null || !connected || !uartSubscribed) {
+            notifyTestStatus = "Conecta el reloj y activa la recepción UART"
+            return
+        }
+        if (notifyTestBusy || pendingMeasurement != null ||
+            uartPendingEnabled != null || extraPendingEnabled != null) {
+            notifyTestStatus = "Hay una operación Bluetooth en curso"
+            return
+        }
+        val char = current.getService(UART_SERVICE)?.getCharacteristic(UART_WRITE)
+        if (char == null || char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE == 0) {
+            notifyTestStatus = "El reloj no permite escritura UART sin respuesta"
+            return
+        }
+        val frame = WatchNotificationProtocol.pushNotification(
+            WatchNotificationProtocol.Type.WHATSAPP, "Ultra3: mensaje de prueba"
+        )
+        val fragments = WatchNotificationProtocol.fragments(frame)
+        notifyTestToken++
+        val token = notifyTestToken
+        notifyTestBusy = true
+        notifyTestStatus = "Enviando mensaje ficticio..."
+        addLog("Notificación de prueba: DF CMD 02 SUB 12, solo contenido ficticio")
+        fun sendPart(i: Int) {
+            if (token != notifyTestToken || gatt !== current || !connected) {
+                if (token == notifyTestToken) {
+                    notifyTestBusy = false
+                    notifyTestStatus = "Envío interrumpido"
+                }
+                return
+            }
+            try {
+                val ok = if (Build.VERSION.SDK_INT >= 33) {
+                    current.writeCharacteristic(
+                        char, fragments[i], BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    ) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    @Suppress("DEPRECATION")
+                    char.value = fragments[i]
+                    @Suppress("DEPRECATION")
+                    current.writeCharacteristic(char)
+                }
+                if (!ok) {
+                    notifyTestBusy = false
+                    notifyTestStatus = "Error en fragmento " + (i + 1)
+                    addLog(notifyTestStatus)
+                } else if (i + 1 < fragments.size) {
+                    window.decorView.postDelayed({ sendPart(i + 1) }, 160L)
+                } else {
+                    notifyTestBusy = false
+                    notifyTestStatus = "Enviado por BLE; comprueba la pantalla del reloj"
+                    addLog("Test de notificación transmitido; recepción aún no confirmada")
+                }
+            } catch (e: Exception) {
+                notifyTestBusy = false
+                notifyTestStatus = "Error Bluetooth: " + (e.message ?: e.javaClass.simpleName)
+                addLog(notifyTestStatus)
+            }
+        }
+        sendPart(0)
+    }
+
     private fun markActivityEvent(kind: String) {
         val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
         val message = "MARCADOR MANUAL: $kind (no envía órdenes al reloj)"
@@ -835,6 +915,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        notifyTestToken++
+        notifyTestBusy = false
         stopScan()
         try { gatt?.close() } catch (_: Exception) {}
         super.onDestroy()
@@ -854,6 +936,7 @@ private fun UltraApp(
     heartCandidate: String, pressureCandidate: String,
     measurementRequestStatus: String, measurementInProgress: Boolean,
     onRequestMeasurement: (ExperimentalVitalDecoder.Kind) -> Unit,
+    notifyTestStatus: String, notifyTestBusy: Boolean, onNotifyTest: () -> Unit,
     extraState: String, extraSubscribed: Boolean, extraBusy: Boolean,
     extraCount: Int, extraMessages: List<String>,
     rssiFor: (String) -> Int?,
@@ -890,6 +973,7 @@ private fun UltraApp(
                         battery, rssiFor, savedMeasurements, uartSubscribed, uartBusy,
                         services.any { it.uuid == UART_SERVICE }, onToggleUart,
                         measurementRequestStatus, measurementInProgress, onRequestMeasurement,
+                        notifyTestStatus, notifyTestBusy, onNotifyTest,
                         onScan, onDirectConnect, onConnect, onDisconnect)
                 }
                 1 -> ServicesScreen(
@@ -914,6 +998,7 @@ private fun DeviceScreen(
     uartBusy: Boolean, uartAvailable: Boolean, onToggleUart: () -> Unit,
     measurementRequestStatus: String, measurementInProgress: Boolean,
     onRequestMeasurement: (ExperimentalVitalDecoder.Kind) -> Unit,
+    notifyTestStatus: String, notifyTestBusy: Boolean, onNotifyTest: () -> Unit,
     onScan: () -> Unit, onDirectConnect: (String) -> Unit,
     onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit
 ) {
@@ -1009,6 +1094,20 @@ private fun DeviceScreen(
                 ) { Text("Medir presión", fontSize = 12.sp) }
             }
             Text(measurementRequestStatus, color = Muted, fontSize = 11.sp)
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(color = Bg)
+            Spacer(Modifier.height(10.dp))
+            Text("PRUEBA DE NOTIFICACIONES", fontSize = 11.sp,
+                color = Green, fontWeight = FontWeight.Bold)
+            Text("Texto ficticio tipo WhatsApp, sin leer notificaciones personales.",
+                fontSize = 11.sp, color = Muted)
+            Button(
+                enabled = connected && uartSubscribed && !uartBusy &&
+                    !measurementInProgress && !notifyTestBusy,
+                onClick = onNotifyTest,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (notifyTestBusy) "Enviando..." else "Enviar notificación de prueba") }
+            Text(notifyTestStatus, fontSize = 11.sp, color = Muted)
             Text(
                 "Comandos capturados de HryFine. Se envían solo cuando pulsas un botón.",
                 color = Muted, fontSize = 10.sp
