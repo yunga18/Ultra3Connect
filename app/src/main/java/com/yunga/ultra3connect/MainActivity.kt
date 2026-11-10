@@ -1039,6 +1039,12 @@ private fun UltraApp(
     devices: List<BluetoothDevice>, nameFor: (String) -> String,
     selectedAddress: String?, services: List<BluetoothGattService>,
     battery: String, logLines: List<String>, characteristicValue: String,
+    notificationAccessGranted: Boolean, notificationForwardEnabled: Boolean,
+    notificationAppAllowed: Map<String, Boolean>,
+    notificationForwardedCount: Int, notificationDroppedCount: Int,
+    onOpenNotificationAccess: () -> Unit,
+    onNotificationMasterChange: (Boolean) -> Unit,
+    onNotificationAppChange: (String, Boolean) -> Unit,
     savedMeasurements: List<StoredMeasurement>, onClearMeasurements: () -> Unit,
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
@@ -1065,6 +1071,8 @@ private fun UltraApp(
             NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                 icon = { Icon(Icons.Default.History, null) }, label = { Text("Historial") })
             NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                icon = { Icon(Icons.Default.Notifications, null) }, label = { Text("Avisos") })
+            NavigationBarItem(selected = tab == 4, onClick = { tab = 4 },
                 icon = { Icon(Icons.Default.Refresh, null) }, label = { Text("Registro") })
         }
     }) { padding ->
@@ -1086,14 +1094,40 @@ private fun UltraApp(
                         notifyTestStatus, notifyTestBusy, onNotifyTest,
                         onScan, onDirectConnect, onConnect, onDisconnect)
                 }
-                1 -> ServicesScreen(
-                    services, characteristicValue, connected, uartState, uartSubscribed,
-                    uartBusy || extraBusy, uartCount, uartMessages,
-                    dfFrameCount, dfVerifiedCount, dfFrameMessages, heartCandidate, pressureCandidate,
-                    onToggleUart, onMarkEvent, extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
-                )
-                2 -> MeasurementHistoryScreen(savedMeasurements, onClearMeasurements)
-                else -> LogScreen(logLines)
+                1 -> Column(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    ServicesScreen(
+                        services, characteristicValue, connected, uartState, uartSubscribed,
+                        uartBusy || extraBusy, uartCount, uartMessages,
+                        dfFrameCount, dfVerifiedCount, dfFrameMessages, heartCandidate, pressureCandidate,
+                        onToggleUart, onMarkEvent, extraState, extraSubscribed, extraCount,
+                        extraMessages, onToggleExtra, onRead
+                    )
+                }
+                2 -> Column(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    MeasurementHistoryScreen(savedMeasurements, onClearMeasurements)
+                }
+                3 -> Column(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    NotificationSettingsScreen(
+                        notificationAccessGranted, notificationForwardEnabled,
+                        notificationAppAllowed, notificationForwardedCount,
+                        notificationDroppedCount, connected, uartSubscribed,
+                        uartBusy || extraBusy, onOpenNotificationAccess,
+                        onNotificationMasterChange, onNotificationAppChange, onToggleUart
+                    )
+                }
+                else -> Column(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) { LogScreen(logLines) }
             }
         }
     }
@@ -1377,8 +1411,8 @@ private fun ServicesScreen(
     Text(value, color = Green, fontSize = 12.sp)
     Spacer(Modifier.height(8.dp))
     if (services.isEmpty()) Text("Conecta el reloj para descubrir sus servicios.", color = Muted)
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(services, key = { it.uuid.toString() }) { service ->
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        services.forEach { service ->
             Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
                     Text("Servicio", color = Green, fontWeight = FontWeight.Bold)
@@ -1399,6 +1433,111 @@ private fun ServicesScreen(
             }
         }
     }
+}
+
+
+@Composable
+private fun NotificationSettingsScreen(
+    accessGranted: Boolean,
+    masterEnabled: Boolean,
+    appAllowed: Map<String, Boolean>,
+    forwardedCount: Int,
+    droppedCount: Int,
+    connected: Boolean,
+    uartSubscribed: Boolean,
+    uartBusy: Boolean,
+    onOpenSettings: () -> Unit,
+    onMasterChange: (Boolean) -> Unit,
+    onAppChange: (String, Boolean) -> Unit,
+    onToggleUart: () -> Unit
+) {
+    Text("NOTIFICACIONES DE ANDROID", color = Muted, fontSize = 11.sp,
+        letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(8.dp))
+    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text(
+                if (accessGranted) "Acceso concedido en Android"
+                else "Acceso especial pendiente",
+                color = if (accessGranted) Green else Muted,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "El permiso permite leer notificaciones en Android, pero solo se envían " +
+                    "al reloj las aplicaciones que actives aquí. Por defecto, ninguna.",
+                color = Muted, fontSize = 12.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Text(if (accessGranted) "Administrar permiso de Android" else "Conceder acceso a notificaciones")
+            }
+            Spacer(Modifier.height(7.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Reenvío activado", fontWeight = FontWeight.Medium)
+                    Text("Control general", fontSize = 11.sp, color = Muted)
+                }
+                Switch(
+                    checked = masterEnabled,
+                    enabled = accessGranted,
+                    onCheckedChange = onMasterChange
+                )
+            }
+            if (!accessGranted) {
+                Text("Activa el acceso en los ajustes de Android y vuelve a esta pantalla.",
+                    color = Muted, fontSize = 11.sp)
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    Text("APLICACIONES PERMITIDAS", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(7.dp))
+    WatchNotificationSources.supported.forEach { app ->
+        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(app.name, fontWeight = FontWeight.SemiBold)
+                    Text("Enviar mensajes de esta aplicación", fontSize = 11.sp, color = Muted)
+                }
+                Switch(
+                    checked = appAllowed[app.key] == true,
+                    enabled = accessGranted,
+                    onCheckedChange = { onAppChange(app.key, it) }
+                )
+            }
+        }
+        Spacer(Modifier.height(7.dp))
+    }
+    Spacer(Modifier.height(10.dp))
+    Text("ESTADO DEL ENVÍO", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(7.dp))
+    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text("Bluetooth: " + if (connected) "Conectado" else "Desconectado")
+            Text("UART: " + if (uartSubscribed) "Activado" else "Sin activar")
+            Text("Avisos enviados por BLE: $forwardedCount", color = Green)
+            Text("Avisos descartados por conexión u operación: $droppedCount",
+                fontSize = 12.sp, color = Muted)
+            Spacer(Modifier.height(8.dp))
+            Button(
+                enabled = connected && !uartBusy,
+                onClick = onToggleUart,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (uartSubscribed) "Detener recepción UART" else "Activar recepción UART") }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    Text(
+        "Privacidad: se omiten avisos con códigos de verificación, PIN y contraseñas. " +
+            "No guardamos el contenido de los mensajes. El historial médico es independiente. " +
+            "En esta versión el Bluetooth permanece administrado por la pantalla de la app: " +
+            "la entrega en segundo plano todavía no está garantizada.",
+        fontSize = 12.sp, color = Muted
+    )
+    Spacer(Modifier.height(16.dp))
 }
 
 @Composable
@@ -1431,8 +1570,8 @@ private fun MeasurementHistoryScreen(
     if (measurements.isEmpty()) {
         Text("No hay mediciones guardadas. Conecta el reloj, activa UART y realiza una medición.", color = Muted)
     }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(measurements) { item ->
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        measurements.forEach { item ->
             Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Text(measurementKindLabel(item.kind), color = Muted, fontSize = 12.sp)
@@ -1480,8 +1619,8 @@ private fun LogScreen(lines: List<String>) {
     }) { Text("Copiar registro") }
     Spacer(Modifier.height(8.dp))
     if (lines.isEmpty()) Text("Todavía no hay eventos.", color = Muted)
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        items(lines) { line ->
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        lines.forEach { line ->
             Text("›  $line", color = Color(0xFFCAD5DF), fontSize = 12.sp)
             HorizontalDivider(color = Panel)
         }
