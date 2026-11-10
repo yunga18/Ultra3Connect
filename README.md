@@ -150,3 +150,11 @@ Se analizó el registro HCI enviado por el propietario el 10 de noviembre de 202
 - La lista de BLE utiliza una columna regular en esa pantalla para evitar LazyColumns anidadas dentro de un área de altura ilimitada.
 - Cuando se detecta un periférico con nombre exacto **Ultra 3**, se muestra el acceso rápido **Conectar Ultra 3 detectado** debajo de la tarjeta de conexión.
 - Ninguna característica GATT, UUID, comando DF ni mecanismo de lectura cambia en esta versión.
+
+## Versión 1.1.0 — Prototipo manual de notificaciones
+- Análisis offline del `base.apk` HryFine recibido, documentado en `docs/notifications-research.md`.
+- Nuevo codificador `WatchNotificationProtocol`, comando DF 02/12, fragmentación BLE de 20 bytes y pruebas unitarias.
+- Botón **Enviar notificación de prueba** en Dispositivo que solo envía texto ficticio de prueba.
+- Debes conectar Ultra 3 y activar recepción UART antes de pulsarlo.
+- El botón todavía NO lee WhatsApp ni otros mensajes privados, NO solicita permiso para notificaciones Android y NO funciona en segundo plano.
+- Envío BLE exitoso NO garantiza visualización en el reloj hasta realizar la prueba física. No se envían comandos OTA.
