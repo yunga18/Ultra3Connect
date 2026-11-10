@@ -44,3 +44,19 @@ Sube el contenido de esta carpeta a la raíz del repositorio GitHub (no la carpe
 Ve a Actions > Build Android APK > Run workflow o haz un push a main.
 Cuando el workflow termine correctamente, abre su ejecución y descarga `Ultra3Connect-debug-apk` desde Artifacts. Extrae el ZIP para obtener `app-debug.apk`.
 El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquier error real.
+
+## Versión 0.2.0 — Diagnóstico BLE
+- Escaneo sin filtros en modo LOW_LATENCY durante 25 segundos.
+- Resultados priorizados para nombres que contienen `ultra` y ordenados por señal (dBm).
+- Mensajes de diagnóstico cuando no se detectan dispositivos o fallan los permisos.
+- Entrada manual de dirección LE para conexión directa, sin guardar la dirección en GitHub.
+- Lectura automática de Battery Level (2A19) después de descubrir servicios.
+- Se impide leer características GATT sin propiedad READ.
+
+### Si Ultra 3 no aparece
+1. Enciende Bluetooth del móvil y concede el permiso **Dispositivos cercanos**.
+2. Desconecta nRF Connect y HryFine antes de abrir Ultra 3 Connect.
+3. Mantén encendido el reloj y la pantalla del móvil mientras buscas.
+4. En Android 11 o anterior también activa Ubicación del dispositivo.
+5. Si aparece en nRF Connect y no aquí, consulta **Registro** en nuestra app.
+6. La opción de dirección manual usa la dirección **LE**, no la de Bluetooth clásico, y puede fallar si la dirección del reloj cambia.

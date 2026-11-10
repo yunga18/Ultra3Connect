@@ -2,6 +2,7 @@ package com.yunga.ultra3connect
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -12,6 +13,8 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.location.LocationManager
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -47,6 +50,8 @@ private val Muted = Color(0xFF9AA8B5)
 class MainActivity : ComponentActivity() {
     private val devices = mutableStateListOf<BluetoothDevice>()
     private val deviceNames = mutableStateMapOf<String, String>()
+    private val signalStrengths = mutableStateMapOf<String, Int>()
+    private var scanSession = 0
     private val services = mutableStateListOf<BluetoothGattService>()
     private val logLines = mutableStateListOf<String>()
     private var gatt: BluetoothGatt? = null
@@ -59,22 +64,45 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.values.all { it }) startScan() else status = "Faltan permisos Bluetooth"
+            if (result.isNotEmpty() && result.values.all { it }) {
+                startScan()
+            } else {
+                status = "Permisos de dispositivos cercanos denegados"
+                addLog(status)
+            }
         }
+
+    private val directPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) connectToAddress(pendingAddress)
+            else {
+                status = "Permiso Bluetooth Connect denegado"
+                addLog(status)
+            }
+        }
+    private var pendingAddress = ""
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
             val address = device.address
             runOnUiThread {
-                if (devices.none { it.address == address }) devices.add(device)
+                val newDevice = devices.none { it.address == address }
+                if (newDevice) devices.add(device)
                 deviceNames[address] = try {
-                    device.name ?: result.scanRecord?.deviceName ?: "Dispositivo sin nombre"
+                    result.scanRecord?.deviceName ?: device.name ?: "Sin nombre"
                 } catch (_: SecurityException) { "Dispositivo Bluetooth" }
+                signalStrengths[address] = result.rssi
+                if (newDevice) addLog("Detectado: " + deviceNames[address] + " · " + address + " · " + result.rssi + " dBm")
             }
         }
         override fun onScanFailed(errorCode: Int) {
-            runOnUiThread { scanning = false; status = "Error de escaneo: $errorCode"; addLog(status) }
+            runOnUiThread {
+                scanning = false
+                scanSession++
+                status = "Error de escaneo BLE: " + errorCode
+                addLog(status)
+            }
         }
     }
 
@@ -104,8 +132,17 @@ class MainActivity : ComponentActivity() {
                     services.addAll(g.services)
                     status = "${services.size} servicios encontrados"
                     addLog(status)
+                    val batteryChar = g.getService(UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb"))
+                        ?.getCharacteristic(UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb"))
+                    if (batteryChar != null && batteryChar.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
+                        try {
+                            @SuppressLint("MissingPermission")
+                            g.readCharacteristic(batteryChar)
+                        } catch (_: SecurityException) { addLog("Sin permiso para leer batería") }
+                    }
                 } else {
                     status = "No se pudieron descubrir servicios: $statusCode"
+                    addLog(status)
                 }
             }
         }
@@ -153,7 +190,9 @@ class MainActivity : ComponentActivity() {
                     battery = battery,
                     logLines = logLines.toList(),
                     characteristicValue = characteristicValue,
-                    onScan = { requestPermissionsAndScan() },
+                    rssiFor = { signalStrengths[it] },
+                    onScan = { if (scanning) stopScan() else requestPermissionsAndScan() },
+                    onDirectConnect = { requestDirectConnect(it) },
                     onConnect = { connectTo(it) },
                     onDisconnect = { disconnect() },
                     onRead = { service, characteristic -> readCharacteristic(service, characteristic) }
@@ -174,38 +213,124 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     private fun startScan() {
+        if (scanning) stopScan()
         val manager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
         val adapter = manager.adapter
         if (adapter == null || !adapter.isEnabled) {
-            status = "Activa Bluetooth para continuar"
+            status = "Activa Bluetooth para buscar el reloj"
+            addLog(status)
             return
         }
+        if (Build.VERSION.SDK_INT in 28..30) {
+            val location = getSystemService(LOCATION_SERVICE) as LocationManager
+            if (!location.isLocationEnabled) {
+                status = "Activa Ubicación del teléfono para el escaneo BLE"
+                addLog(status)
+                return
+            }
+        }
         val scanner = adapter.bluetoothLeScanner
-        if (scanner == null) { status = "Escáner BLE no disponible"; return }
+        if (scanner == null) {
+            status = "Escáner BLE no disponible"
+            addLog(status)
+            return
+        }
         devices.clear()
         deviceNames.clear()
+        signalStrengths.clear()
         scanning = true
-        status = "Buscando dispositivos BLE…"
-        addLog("Inicio de escaneo BLE")
-        scanner.startScan(scanCallback)
-        window.decorView.postDelayed({
-            try { scanner.stopScan(scanCallback) } catch (_: SecurityException) {}
+        scanSession++
+        val session = scanSession
+        status = "Escaneo intenso de 25 segundos..."
+        addLog("Iniciando escaneo BLE sin filtros · modo LOW_LATENCY")
+        try {
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setReportDelay(0L)
+                .build()
+            scanner.startScan(null, settings, scanCallback)
+            window.decorView.postDelayed({
+                if (scanning && scanSession == session) stopScan()
+            }, 25000L)
+        } catch (e: Exception) {
             scanning = false
-            if (status.startsWith("Buscando")) status = "${devices.size} dispositivos encontrados"
-        }, 12000)
+            scanSession++
+            status = "Error iniciando escaneo: " + (e.message ?: e.javaClass.simpleName)
+            addLog(status)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopScan() {
+        if (!scanning) return
+        scanSession++
+        scanning = false
+        try {
+            val manager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
+            manager.adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {}
+        status = if (devices.isEmpty())
+            "No se encontraron dispositivos; revisa Permisos y Registro"
+        else "Se encontraron " + devices.size + " dispositivos BLE"
+        addLog(status)
+    }
+
+    private fun requestDirectConnect(address: String) {
+        val clean = address.trim().uppercase()
+        if (!BluetoothAdapter.checkBluetoothAddress(clean)) {
+            status = "Dirección BLE inválida. Utiliza AA:BB:CC:DD:EE:FF"
+            addLog(status)
+            return
+        }
+        pendingAddress = clean
+        if (Build.VERSION.SDK_INT >= 31 &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            directPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        } else connectToAddress(clean)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectToAddress(address: String) {
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        if (adapter == null || !adapter.isEnabled) {
+            status = "Activa Bluetooth primero"
+            return
+        }
+        try {
+            addLog("Conexión manual por dirección: " + address)
+            connectTo(adapter.getRemoteDevice(address))
+        } catch (e: Exception) {
+            status = "Conexión manual falló: " + (e.message ?: e.javaClass.simpleName)
+            addLog(status)
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun connectTo(device: BluetoothDevice) {
         try {
+            stopScan()
+            gatt?.disconnect()
             gatt?.close()
+            gatt = null
+            connected = false
             services.clear()
+            battery = "Sin lectura"
             selectedAddress = device.address
-            status = "Conectando a ${device.address}…"
-            addLog("Conectando a ${device.address}")
-            gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } catch (e: SecurityException) {
-            status = "Permiso Bluetooth denegado"
+            status = "Conectando a " + device.address
+            addLog(status)
+            val target = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            gatt = target
+            window.decorView.postDelayed({
+                if (!connected && gatt === target && selectedAddress == device.address) {
+                    status = "No respondió en 18 s; verifica que el reloj esté disponible"
+                    addLog(status)
+                    try { target?.disconnect(); target?.close() } catch (_: Exception) {}
+                    if (gatt === target) gatt = null
+                }
+            }, 18000L)
+        } catch (e: Exception) {
+            status = "Error de conexión: " + (e.message ?: e.javaClass.simpleName)
+            addLog(status)
         }
     }
 
@@ -217,6 +342,11 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun readCharacteristic(service: BluetoothGattService, characteristic: BluetoothGattCharacteristic) {
         val current = gatt ?: return
+        if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_READ == 0) {
+            characteristicValue = "Esta característica no permite READ"
+            addLog(characteristicValue)
+            return
+        }
         try {
             val ok = current.readCharacteristic(characteristic)
             characteristicValue = if (ok) "Solicitando lectura…" else "No se pudo iniciar la lectura"
@@ -231,6 +361,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        stopScan()
         try { gatt?.close() } catch (_: Exception) {}
         super.onDestroy()
     }
@@ -242,7 +373,8 @@ private fun UltraApp(
     devices: List<BluetoothDevice>, nameFor: (String) -> String,
     selectedAddress: String?, services: List<BluetoothGattService>,
     battery: String, logLines: List<String>, characteristicValue: String,
-    onScan: () -> Unit, onConnect: (BluetoothDevice) -> Unit,
+    rssiFor: (String) -> Int?,
+    onScan: () -> Unit, onDirectConnect: (String) -> Unit, onConnect: (BluetoothDevice) -> Unit,
     onDisconnect: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
 ) {
@@ -263,7 +395,7 @@ private fun UltraApp(
             Spacer(Modifier.height(16.dp))
             when (tab) {
                 0 -> DeviceScreen(status, scanning, connected, devices, nameFor, selectedAddress,
-                    battery, onScan, onConnect, onDisconnect)
+                    battery, rssiFor, onScan, onDirectConnect, onConnect, onDisconnect)
                 1 -> ServicesScreen(services, characteristicValue, onRead)
                 else -> LogScreen(logLines)
             }
@@ -275,8 +407,11 @@ private fun UltraApp(
 private fun DeviceScreen(
     status: String, scanning: Boolean, connected: Boolean, devices: List<BluetoothDevice>,
     nameFor: (String) -> String, selectedAddress: String?, battery: String,
-    onScan: () -> Unit, onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit
+    rssiFor: (String) -> Int?,
+    onScan: () -> Unit, onDirectConnect: (String) -> Unit,
+    onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit
 ) {
+    var manualAddress by remember { mutableStateOf("") }
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.fillMaxWidth().padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -296,19 +431,36 @@ private fun DeviceScreen(
                 }
                 Button(onClick = if (connected) onDisconnect else onScan,
                     colors = ButtonDefaults.buttonColors(containerColor = Green)) {
-                    Text(if (connected) "Desconectar" else if (scanning) "Buscando…" else "Buscar reloj")
+                    Text(if (connected) "Desconectar" else if (scanning) "Detener" else "Buscar reloj")
                 }
             }
         }
     }
-    Spacer(Modifier.height(18.dp))
+    Spacer(Modifier.height(8.dp))
+    Text("Si no aparece Ultra 3, ingresa la dirección LE que muestra el reloj.", color = Muted, fontSize = 12.sp)
+    OutlinedTextField(
+        value = manualAddress,
+        onValueChange = { manualAddress = it },
+        label = { Text("Dirección LE del reloj") },
+        placeholder = { Text("AA:BB:CC:DD:EE:FF") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    TextButton(onClick = { onDirectConnect(manualAddress) }, enabled = manualAddress.isNotBlank()) {
+        Text("Intentar conexión directa")
+    }
+    Spacer(Modifier.height(8.dp))
     Text("DISPOSITIVOS CERCANOS", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
     Spacer(Modifier.height(8.dp))
     if (devices.isEmpty()) {
         Text("Pulsa «Buscar reloj» para explorar dispositivos Bluetooth LE.", color = Muted, fontSize = 13.sp)
     }
+    val orderedDevices = devices.sortedWith(
+        compareByDescending<BluetoothDevice> { nameFor(it.address).contains("ultra", ignoreCase = true) }
+            .thenByDescending { rssiFor(it.address) ?: -127 }
+    )
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(devices, key = { it.address }) { device ->
+        items(orderedDevices, key = { it.address }) { device ->
             val address = device.address
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { onConnect(device) },
@@ -316,7 +468,7 @@ private fun DeviceScreen(
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(nameFor(address), fontWeight = FontWeight.SemiBold)
-                    Text(address, color = Muted, fontSize = 11.sp)
+                    Text(address + " · " + (rssiFor(address)?.toString() ?: "?") + " dBm", color = Muted, fontSize = 11.sp)
                     if (selectedAddress == address) Text("Seleccionado", color = Green, fontSize = 11.sp)
                 }
             }
