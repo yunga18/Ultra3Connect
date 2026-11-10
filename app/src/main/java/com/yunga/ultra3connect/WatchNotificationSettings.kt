@@ -48,9 +48,17 @@ data class IncomingWatchNotice(
     val text: String
 )
 
-/** In-memory delivery only; never stores message bodies. The Activity owns BLE. */
+/**
+ * In-memory only: no notification bodies are persisted.
+ * The listener posts diagnostic milestones without sensitive content.
+ */
 object WatchNotificationBridge {
     @Volatile var receiver: ((IncomingWatchNotice) -> Unit)? = null
+    @Volatile var diagnostic: ((String) -> Unit)? = null
+
+    fun report(message: String) {
+        diagnostic?.invoke(message)
+    }
 }
 
 object NotificationPrivacyFilter {
