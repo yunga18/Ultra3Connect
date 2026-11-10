@@ -1128,6 +1128,8 @@ private fun UltraApp(
     notificationAccessGranted: Boolean, notificationForwardEnabled: Boolean,
     notificationAppAllowed: Map<String, Boolean>,
     notificationForwardedCount: Int, notificationDroppedCount: Int,
+    notificationDetectedCount: Int, notificationListenerStatus: String,
+    remoteDisconnectCount: Int, reconnectAttempt: Int,
     onOpenNotificationAccess: () -> Unit,
     onNotificationMasterChange: (Boolean) -> Unit,
     onNotificationAppChange: (String, Boolean) -> Unit,
@@ -1205,8 +1207,9 @@ private fun UltraApp(
                     NotificationSettingsScreen(
                         notificationAccessGranted, notificationForwardEnabled,
                         notificationAppAllowed, notificationForwardedCount,
-                        notificationDroppedCount, connected, uartSubscribed,
-                        uartBusy || extraBusy, onOpenNotificationAccess,
+                        notificationDroppedCount, notificationDetectedCount,
+                        notificationListenerStatus, remoteDisconnectCount, reconnectAttempt,
+                        connected, uartSubscribed, uartBusy || extraBusy, onOpenNotificationAccess,
                         onNotificationMasterChange, onNotificationAppChange, onToggleUart
                     )
                 }
@@ -1536,6 +1539,10 @@ private fun NotificationSettingsScreen(
     appAllowed: Map<String, Boolean>,
     forwardedCount: Int,
     droppedCount: Int,
+    detectedCount: Int,
+    listenerStatus: String,
+    remoteDisconnectCount: Int,
+    reconnectAttempt: Int,
     connected: Boolean,
     uartSubscribed: Boolean,
     uartBusy: Boolean,
@@ -1611,9 +1618,17 @@ private fun NotificationSettingsScreen(
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
             Text("Bluetooth: " + if (connected) "Conectado" else "Desconectado")
             Text("UART: " + if (uartSubscribed) "Activado" else "Sin activar")
+            Text("Avisos detectados desde Android: $detectedCount", color = Green)
+            Text("Último evento: " + listenerStatus, fontSize = 12.sp, color = Muted)
             Text("Avisos enviados por BLE: $forwardedCount", color = Green)
             Text("Avisos descartados por conexión u operación: $droppedCount",
                 fontSize = 12.sp, color = Muted)
+            Text("Desconexiones remotas GATT 19: $remoteDisconnectCount",
+                fontSize = 12.sp, color = Muted)
+            if (reconnectAttempt > 0) {
+                Text("Reconexión controlada: intento $reconnectAttempt/3",
+                    fontSize = 12.sp, color = Muted)
+            }
             Spacer(Modifier.height(8.dp))
             Button(
                 enabled = connected && !uartBusy,
@@ -1626,8 +1641,9 @@ private fun NotificationSettingsScreen(
     Text(
         "Privacidad: se omiten avisos con códigos de verificación, PIN y contraseñas. " +
             "No guardamos el contenido de los mensajes. El historial médico es independiente. " +
-            "En esta versión el Bluetooth permanece administrado por la pantalla de la app: " +
-            "la entrega en segundo plano todavía no está garantizada.",
+            "UART se activa automáticamente al conectar el reloj. " +
+            "El enlace Bluetooth sigue dependiendo de esta aplicación: " +
+            "no se garantiza el reenvío con la pantalla apagada.",
         fontSize = 12.sp, color = Muted
     )
     Spacer(Modifier.height(16.dp))
