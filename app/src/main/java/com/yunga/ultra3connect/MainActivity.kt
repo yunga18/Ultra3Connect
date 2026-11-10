@@ -37,6 +37,8 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -69,6 +71,8 @@ class MainActivity : ComponentActivity() {
     private var scanSession = 0
     private val services = mutableStateListOf<BluetoothGattService>()
     private val logLines = mutableStateListOf<String>()
+    private val savedMeasurements = mutableStateListOf<StoredMeasurement>()
+    private lateinit var measurementStore: LocalMeasurementStore
     private var gatt: BluetoothGatt? = null
     private var connected by mutableStateOf(false)
     private var scanning by mutableStateOf(false)
@@ -280,6 +284,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        measurementStore = LocalMeasurementStore(this)
+        savedMeasurements.addAll(measurementStore.load())
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -296,6 +302,14 @@ class MainActivity : ComponentActivity() {
                     services = services.toList(),
                     battery = battery,
                     logLines = logLines.toList(),
+                    savedMeasurements = savedMeasurements.toList(),
+                    onClearMeasurements = {
+                        measurementStore.clear()
+                        savedMeasurements.clear()
+                        heartCandidate = "Sin datos"
+                        pressureCandidate = "Sin datos"
+                        addLog("Historial local de mediciones eliminado")
+                    },
                     characteristicValue = characteristicValue,
                     uartState = uartState,
                     uartSubscribed = uartSubscribed,
@@ -557,6 +571,15 @@ class MainActivity : ComponentActivity() {
                         ExperimentalVitalDecoder.Kind.BLOOD_PRESSURE ->
                             pressureCandidate = experimentalReading.valueLabel
                     }
+                    val entry = StoredMeasurement(
+                        kind = experimentalReading.kind,
+                        valueLabel = experimentalReading.valueLabel,
+                        receivedAtMillis = System.currentTimeMillis(),
+                        packetHex = frame.bytes.toHex()
+                    )
+                    savedMeasurements.add(0, entry)
+                    while (savedMeasurements.size > 100) savedMeasurements.removeAt(savedMeasurements.lastIndex)
+                    measurementStore.save(savedMeasurements)
                 }
                 val label = "CMD=%02X SUB=%02X payload=%d checksum=%s [%s]%s".format(
                     Locale.US, frame.command, frame.subcommand,
@@ -720,6 +743,7 @@ private fun UltraApp(
     devices: List<BluetoothDevice>, nameFor: (String) -> String,
     selectedAddress: String?, services: List<BluetoothGattService>,
     battery: String, logLines: List<String>, characteristicValue: String,
+    savedMeasurements: List<StoredMeasurement>, onClearMeasurements: () -> Unit,
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
     dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
@@ -740,6 +764,8 @@ private fun UltraApp(
             NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
                 icon = { Icon(Icons.Default.BatteryFull, null) }, label = { Text("Servicios") })
             NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
+                icon = { Icon(Icons.Default.History, null) }, label = { Text("Historial") })
+            NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
                 icon = { Icon(Icons.Default.Refresh, null) }, label = { Text("Registro") })
         }
     }) { padding ->
@@ -749,13 +775,16 @@ private fun UltraApp(
             Spacer(Modifier.height(16.dp))
             when (tab) {
                 0 -> DeviceScreen(status, scanning, connected, devices, nameFor, selectedAddress,
-                    battery, rssiFor, onScan, onDirectConnect, onConnect, onDisconnect)
+                    battery, rssiFor, savedMeasurements, uartSubscribed, uartBusy,
+                    services.any { it.uuid == UART_SERVICE }, onToggleUart,
+                    onScan, onDirectConnect, onConnect, onDisconnect)
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
                     uartBusy || extraBusy, uartCount, uartMessages,
                     dfFrameCount, dfVerifiedCount, dfFrameMessages, heartCandidate, pressureCandidate,
                     onToggleUart, onMarkEvent, extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
                 )
+                2 -> MeasurementHistoryScreen(savedMeasurements, onClearMeasurements)
                 else -> LogScreen(logLines)
             }
         }
@@ -767,6 +796,8 @@ private fun DeviceScreen(
     status: String, scanning: Boolean, connected: Boolean, devices: List<BluetoothDevice>,
     nameFor: (String) -> String, selectedAddress: String?, battery: String,
     rssiFor: (String) -> Int?,
+    savedMeasurements: List<StoredMeasurement>, uartSubscribed: Boolean,
+    uartBusy: Boolean, uartAvailable: Boolean, onToggleUart: () -> Unit,
     onScan: () -> Unit, onDirectConnect: (String) -> Unit,
     onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit
 ) {
@@ -795,7 +826,44 @@ private fun DeviceScreen(
             }
         }
     }
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(12.dp))
+    Text("LECTURAS DEL RELOJ", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(7.dp))
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(15.dp)) {
+            val latestHr = savedMeasurements.firstOrNull {
+                it.kind == ExperimentalVitalDecoder.Kind.HEART_RATE
+            }
+            val latestBp = savedMeasurements.firstOrNull {
+                it.kind == ExperimentalVitalDecoder.Kind.BLOOD_PRESSURE
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text("Pulso", color = Muted, fontSize = 12.sp)
+                    Text(latestHr?.valueLabel ?: "Sin datos", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                    Text(latestHr?.let { formatMeasurementTime(it.receivedAtMillis) } ?: "Aún no recibido",
+                        color = Muted, fontSize = 10.sp)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Presión", color = Muted, fontSize = 12.sp)
+                    Text(latestBp?.valueLabel ?: "Sin datos", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                    Text(latestBp?.let { formatMeasurementTime(it.receivedAtMillis) } ?: "Aún no recibida",
+                        color = Muted, fontSize = 10.sp)
+                }
+            }
+            Spacer(Modifier.height(9.dp))
+            Text(
+                "Datos informados por el reloj, sin validación clínica. No usarlos para decisiones médicas.",
+                color = Muted, fontSize = 11.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                enabled = connected && uartAvailable && !uartBusy,
+                onClick = onToggleUart
+            ) { Text(if (uartSubscribed) "Detener captura de lecturas" else "Activar recepción de lecturas") }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
     Text("Si no aparece Ultra 3, ingresa la dirección LE que muestra el reloj.", color = Muted, fontSize = 12.sp)
     OutlinedTextField(
         value = manualAddress,
@@ -968,6 +1036,72 @@ private fun ServicesScreen(
         }
     }
 }
+
+@Composable
+private fun MeasurementHistoryScreen(
+    measurements: List<StoredMeasurement>,
+    onClearMeasurements: () -> Unit
+) {
+    var confirmClear by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    Text("HISTORIAL LOCAL", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Últimas 100 lecturas del reloj. Se almacenan solamente en este teléfono.",
+        color = Muted, fontSize = 12.sp
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedButton(enabled = measurements.isNotEmpty(), onClick = {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = measurements.asReversed().joinToString("\n") { entry ->
+                "${formatMeasurementTime(entry.receivedAtMillis)} | ${measurementKindLabel(entry.kind)} | ${entry.valueLabel} | ${entry.packetHex}"
+            }
+            clipboard.setPrimaryClip(ClipData.newPlainText("Ultra 3 Connect · Historial", text))
+        }) { Text("Copiar") }
+        OutlinedButton(enabled = measurements.isNotEmpty(), onClick = { confirmClear = true }) {
+            Text("Borrar todo")
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    if (measurements.isEmpty()) {
+        Text("No hay mediciones guardadas. Conecta el reloj, activa UART y realiza una medición.", color = Muted)
+    }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(measurements) { item ->
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(measurementKindLabel(item.kind), color = Muted, fontSize = 12.sp)
+                    Text(item.valueLabel, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Green)
+                    Text(formatMeasurementTime(item.receivedAtMillis), fontSize = 11.sp, color = Muted)
+                }
+            }
+        }
+    }
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Eliminar historial") },
+            text = { Text("Se borrarán las mediciones guardadas en este teléfono. Esta acción no se puede deshacer.") },
+            confirmButton = {
+                TextButton(onClick = { onClearMeasurements(); confirmClear = false }) {
+                    Text("Eliminar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("Cancelar") }
+            }
+        )
+    }
+}
+
+private fun measurementKindLabel(kind: ExperimentalVitalDecoder.Kind): String = when (kind) {
+    ExperimentalVitalDecoder.Kind.HEART_RATE -> "Frecuencia cardíaca"
+    ExperimentalVitalDecoder.Kind.BLOOD_PRESSURE -> "Presión arterial"
+}
+
+private fun formatMeasurementTime(timeMs: Long): String =
+    SimpleDateFormat("dd/MM HH:mm:ss", Locale.getDefault()).format(Date(timeMs))
 
 @Composable
 private fun LogScreen(lines: List<String>) {

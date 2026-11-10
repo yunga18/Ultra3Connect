@@ -120,3 +120,15 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 - Los datos mostrados son temporales en memoria y se borran al reconectar; no se comparten con servicios de terceros.
 - Pruebas unitarias con los dos mensajes reales de 11:31 y un paquete con checksum alterado.
 - Sin nuevos comandos Bluetooth, sin escrituras al protocolo propietario y sin actualizaciones OTA.
+
+## Versión 0.9.0 — Pantalla de mediciones e historial local
+- Se confirmó que dos tramas CMD 05 SUB 04/05 del Ultra 3 coincidían exactamente con lecturas vistas en el reloj: pulso 90 lpm y presión 111/82 mmHg. La equivalencia de bytes y pantalla no valida precisión médica.
+- La pantalla **Dispositivo** ahora muestra las últimas lecturas recibidas (pulso y presión) con fecha/hora, y permite activar o detener UART sin entrar en Servicios.
+- Nueva pestaña **Historial**: conserva hasta 100 lecturas decodificadas con fecha/hora y la trama HEX correspondiente.
+- Almacenamiento privado mediante SharedPreferences; no se envían datos de salud a servidores ni se exportan automáticamente.
+- Botones **Copiar** para exportación manual al portapapeles y **Borrar todo** con confirmación.
+- El backup automático de Android está desactivado en el manifiesto para reducir exposición de los datos.
+- La captura solo funciona mientras la app está activa y conectada con la recepción UART habilitada; no hay servicio BLE en segundo plano ni reconexión automática.
+- No se recupera el historial de versiones anteriores, que no guardaban mediciones en el teléfono.
+- Las lecturas provienen del reloj genérico y **no deben utilizarse para diagnóstico ni decisiones médicas**.
+- No se envían nuevos comandos propietarios ni se modifica el firmware.
