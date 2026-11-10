@@ -86,3 +86,11 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 - No se envían órdenes al UART TX, ni comandos al servicio de actualización OTA.
 - La escritura del CCCD es el procedimiento necesario para activar las notificaciones; **no** es una escritura de comando de control al firmware.
 - Que no aparezcan paquetes por sí solo no significa error: el reloj podría no enviar datos espontáneamente sin un intercambio propietario aún desconocido.
+
+## Versión 0.5.0 — Monitor opcional FF14
+- Conserva el monitor UART; agrega un segundo monitor **FF14** en el servicio `FF12`.
+- Activa las notificaciones `FF14` usando exclusivamente el descriptor CCCD (0x2902), sin enviar comandos del fabricante.
+- El contador y los últimos paquetes HEX de FF14 se muestran por separado.
+- Evita iniciar dos escrituras de CCCD simultáneas.
+- La pestaña **Registro** tiene un botón **Copiar registro** para compartir diagnósticos. Puede contener direcciones BLE y datos recibidos, revísalos antes de compartirlos.
+- Para probar, conecta el reloj, activa UART y FF14, e interactúa con la pantalla del reloj; la ausencia de paquetes no implica que BLE esté roto.

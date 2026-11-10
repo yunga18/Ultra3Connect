@@ -17,6 +17,9 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.location.LocationManager
 import android.content.pm.PackageManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -37,6 +40,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -50,6 +54,8 @@ private val Muted = Color(0xFF9AA8B5)
 
 private val UART_SERVICE = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9f")
 private val UART_RX = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9f")
+private val EXTRA_SERVICE = UUID.fromString("0000ff12-0000-1000-8000-00805f9b34fb")
+private val EXTRA_NOTIFY = UUID.fromString("0000ff14-0000-1000-8000-00805f9b34fb")
 private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 class MainActivity : ComponentActivity() {
@@ -71,6 +77,11 @@ class MainActivity : ComponentActivity() {
     private var uartPendingEnabled: Boolean? = null
     private var uartCount by mutableIntStateOf(0)
     private val uartMessages = mutableStateListOf<String>()
+    private var extraState by mutableStateOf("Sin activar")
+    private var extraSubscribed by mutableStateOf(false)
+    private var extraPendingEnabled: Boolean? = null
+    private var extraCount by mutableIntStateOf(0)
+    private val extraMessages = mutableStateListOf<String>()
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -147,6 +158,9 @@ class MainActivity : ComponentActivity() {
                         uartSubscribed = false
                         uartPendingEnabled = null
                         uartState = "Desconectado"
+                        extraSubscribed = false
+                        extraPendingEnabled = null
+                        extraState = "Desconectado"
                         status = "BLE desconectado · GATT status=$statusCode"
                         addLog("Desconectado: status=$statusCode (conserva este dato para diagnóstico)")
                         try { g.close() } catch (_: Exception) {}
@@ -217,22 +231,37 @@ class MainActivity : ComponentActivity() {
             statusCode: Int
         ) {
             runOnUiThread {
-                if (g !== gatt || descriptor.uuid != CCCD_UUID ||
-                    descriptor.characteristic.uuid != UART_RX) return@runOnUiThread
-                val enabling = uartPendingEnabled ?: return@runOnUiThread
-                uartPendingEnabled = null
-                if (statusCode == BluetoothGatt.GATT_SUCCESS) {
-                    uartSubscribed = enabling
-                    uartState = if (enabling) "Escuchando notificaciones UART" else "Recepción detenida"
-                } else {
-                    uartState = "Error CCCD: GATT $statusCode"
-                    if (enabling) {
-                        uartSubscribed = false
-                        try { g.setCharacteristicNotification(descriptor.characteristic, false) }
-                        catch (_: Exception) {}
+                if (g !== gatt || descriptor.uuid != CCCD_UUID) return@runOnUiThread
+                val ch = descriptor.characteristic
+                if (ch.uuid == UART_RX && ch.service.uuid == UART_SERVICE) {
+                    val enabling = uartPendingEnabled ?: return@runOnUiThread
+                    uartPendingEnabled = null
+                    if (statusCode == BluetoothGatt.GATT_SUCCESS) {
+                        uartSubscribed = enabling
+                        uartState = if (enabling) "Escuchando notificaciones UART" else "Recepción detenida"
+                    } else {
+                        uartState = "Error CCCD: GATT $statusCode"
+                        if (enabling) {
+                            uartSubscribed = false
+                            try { g.setCharacteristicNotification(ch, false) } catch (_: Exception) {}
+                        }
                     }
+                    addLog("Configuración UART: " + uartState)
+                } else if (ch.uuid == EXTRA_NOTIFY && ch.service.uuid == EXTRA_SERVICE) {
+                    val enabling = extraPendingEnabled ?: return@runOnUiThread
+                    extraPendingEnabled = null
+                    if (statusCode == BluetoothGatt.GATT_SUCCESS) {
+                        extraSubscribed = enabling
+                        extraState = if (enabling) "Escuchando notificaciones FF14" else "Recepción FF14 detenida"
+                    } else {
+                        extraState = "Error FF14 CCCD: GATT $statusCode"
+                        if (enabling) {
+                            extraSubscribed = false
+                            try { g.setCharacteristicNotification(ch, false) } catch (_: Exception) {}
+                        }
+                    }
+                    addLog("Configuración FF14: " + extraState)
                 }
-                addLog("Configuración UART: " + uartState)
             }
         }
     }
@@ -261,8 +290,14 @@ class MainActivity : ComponentActivity() {
                     uartBusy = uartPendingEnabled != null,
                     uartCount = uartCount,
                     uartMessages = uartMessages.toList(),
+                    extraState = extraState,
+                    extraSubscribed = extraSubscribed,
+                    extraBusy = extraPendingEnabled != null,
+                    extraCount = extraCount,
+                    extraMessages = extraMessages.toList(),
                     rssiFor = { signalStrengths[it] },
                     onToggleUart = { toggleUartSubscription() },
+                    onToggleExtra = { toggleExtraSubscription() },
                     onScan = { if (scanning) stopScan() else requestPermissionsAndScan() },
                     onDirectConnect = { requestDirectConnect(it) },
                     onConnect = { connectTo(it) },
@@ -399,6 +434,11 @@ class MainActivity : ComponentActivity() {
             uartCount = 0
             uartMessages.clear()
             uartState = "Sin activar"
+            extraSubscribed = false
+            extraPendingEnabled = null
+            extraCount = 0
+            extraMessages.clear()
+            extraState = "Sin activar"
             selectedAddress = device.address
             status = "Conectando a " + device.address
             addLog(status)
@@ -450,6 +490,11 @@ class MainActivity : ComponentActivity() {
         if (sourceGatt !== gatt) return
         val hex = value.toHex()
         addLog("Notificación ${characteristic.uuid}: $hex")
+        if (characteristic.uuid == EXTRA_NOTIFY && characteristic.service.uuid == EXTRA_SERVICE) {
+            extraCount++
+            extraMessages.add(0, "HEX: $hex")
+            while (extraMessages.size > 40) extraMessages.removeAt(extraMessages.lastIndex)
+        }
         if (characteristic.uuid == UART_RX && characteristic.service.uuid == UART_SERVICE) {
             uartCount++
             val ascii = value.joinToString("") { b ->
@@ -468,7 +513,7 @@ class MainActivity : ComponentActivity() {
             uartState = "Conecta primero el reloj"
             return
         }
-        if (uartPendingEnabled != null) return
+        if (uartPendingEnabled != null || extraPendingEnabled != null) return
         val target = current.getService(UART_SERVICE)?.getCharacteristic(UART_RX)
         if (target == null) {
             uartState = "Servicio UART o característica RX no disponibles"
@@ -520,6 +565,64 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun toggleExtraSubscription() {
+        val current = gatt
+        if (!connected || current == null) {
+            extraState = "Conecta primero el reloj"
+            return
+        }
+        // GATT permits only one descriptor write operation at a time.
+        if (uartPendingEnabled != null || extraPendingEnabled != null) return
+        val target = current.getService(EXTRA_SERVICE)?.getCharacteristic(EXTRA_NOTIFY)
+        if (target == null) {
+            extraState = "Canal FF14 no encontrado"
+            addLog(extraState)
+            return
+        }
+        if (target.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY == 0) {
+            extraState = "FF14 no admite NOTIFY"
+            addLog(extraState)
+            return
+        }
+        val descriptor = target.getDescriptor(CCCD_UUID)
+        if (descriptor == null) {
+            extraState = "FF14 no contiene CCCD 0x2902"
+            addLog(extraState)
+            return
+        }
+        val enable = !extraSubscribed
+        try {
+            if (!current.setCharacteristicNotification(target, enable)) {
+                extraState = "No se pudo activar la recepción FF14 local"
+                addLog(extraState)
+                return
+            }
+            val bytes = if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+            extraPendingEnabled = enable
+            extraState = if (enable) "Activando FF14..." else "Deteniendo FF14..."
+            val started = if (Build.VERSION.SDK_INT >= 33) {
+                current.writeDescriptor(descriptor, bytes) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                descriptor.value = bytes
+                @Suppress("DEPRECATION")
+                current.writeDescriptor(descriptor)
+            }
+            if (!started) {
+                extraPendingEnabled = null
+                extraState = "No se pudo iniciar escritura del descriptor FF14"
+                if (enable) current.setCharacteristicNotification(target, false)
+                addLog(extraState)
+            } else addLog("Configuración CCCD FF14 solicitada")
+        } catch (e: Exception) {
+            extraPendingEnabled = null
+            extraState = "Error FF14: " + (e.message ?: e.javaClass.simpleName)
+            addLog(extraState)
+        }
+    }
+
     private fun addLog(message: String) {
         logLines.add(0, message)
         while (logLines.size > 80) logLines.removeAt(logLines.lastIndex)
@@ -540,8 +643,10 @@ private fun UltraApp(
     battery: String, logLines: List<String>, characteristicValue: String,
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
+    extraState: String, extraSubscribed: Boolean, extraBusy: Boolean,
+    extraCount: Int, extraMessages: List<String>,
     rssiFor: (String) -> Int?,
-    onToggleUart: () -> Unit,
+    onToggleUart: () -> Unit, onToggleExtra: () -> Unit,
     onScan: () -> Unit, onDirectConnect: (String) -> Unit, onConnect: (BluetoothDevice) -> Unit,
     onDisconnect: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
@@ -566,7 +671,8 @@ private fun UltraApp(
                     battery, rssiFor, onScan, onDirectConnect, onConnect, onDisconnect)
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
-                    uartBusy, uartCount, uartMessages, onToggleUart, onRead
+                    uartBusy || extraBusy, uartCount, uartMessages, onToggleUart,
+                    extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
                 )
                 else -> LogScreen(logLines)
             }
@@ -652,6 +758,8 @@ private fun ServicesScreen(
     services: List<BluetoothGattService>, value: String, connected: Boolean,
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>, onToggleUart: () -> Unit,
+    extraState: String, extraSubscribed: Boolean, extraCount: Int,
+    extraMessages: List<String>, onToggleExtra: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
 ) {
     Text("RECEPCIÓN UART", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
@@ -677,6 +785,27 @@ private fun ServicesScreen(
                     Text(message, fontSize = 11.sp, color = Green)
                     Spacer(Modifier.height(6.dp))
                 }
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    Text("CANAL EXPERIMENTAL FF14", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(8.dp))
+    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text(extraState, color = if (extraSubscribed) Green else Muted, fontWeight = FontWeight.SemiBold)
+            Text("Paquetes FF14 recibidos: $extraCount", fontSize = 13.sp, color = Muted)
+            Spacer(Modifier.height(8.dp))
+            Button(
+                enabled = connected && !uartBusy && services.any { it.uuid == EXTRA_SERVICE },
+                onClick = onToggleExtra
+            ) {
+                Text(if (extraSubscribed) "Detener FF14" else "Activar recepción FF14")
+            }
+            Text("Escucha un segundo canal de datos sin enviar comandos al reloj.", fontSize = 11.sp, color = Muted)
+            extraMessages.take(3).forEach { packet ->
+                Spacer(Modifier.height(6.dp))
+                Text(packet, fontSize = 11.sp, color = Green)
             }
         }
     }
@@ -712,7 +841,15 @@ private fun ServicesScreen(
 
 @Composable
 private fun LogScreen(lines: List<String>) {
+    val context = LocalContext.current
     Text("EVENTOS BLUETOOTH", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(8.dp))
+    Button(enabled = lines.isNotEmpty(), onClick = {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText("Ultra 3 Connect · Registro BLE", lines.asReversed().joinToString("\n"))
+        )
+    }) { Text("Copiar registro") }
     Spacer(Modifier.height(8.dp))
     if (lines.isEmpty()) Text("Todavía no hay eventos.", color = Muted)
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
