@@ -76,3 +76,13 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 4. Pulsa Buscar reloj. Si no aparece, entra en Registro y revisa el motivo.
 5. Si no aparece, prueba la dirección LE que termina en 4B.
 6. Si se desconecta, anota el dato `GATT status=...` del Registro. El estado no identifica por sí solo el origen del problema.
+
+## Versión 0.4.0 — Monitor UART de solo recepción
+
+- Conectarse al reloj, navegar a **Servicios** y pulsar **Activar recepción UART**.
+- La app habilita notificaciones en `6e400003-b5a3-f393-e0a9-e50e24dcca9f` mediante el descriptor CCCD 0x2902; el botón puede detener la recepción.
+- Se muestra el estado de suscripción y la cantidad de paquetes UART recibidos, con los últimos cinco mensajes en HEX y ASCII imprimible.
+- Hasta 40 notificaciones se mantienen en memoria y se anotan en **Registro**.
+- No se envían órdenes al UART TX, ni comandos al servicio de actualización OTA.
+- La escritura del CCCD es el procedimiento necesario para activar las notificaciones; **no** es una escritura de comando de control al firmware.
+- Que no aparezcan paquetes por sí solo no significa error: el reloj podría no enviar datos espontáneamente sin un intercambio propietario aún desconocido.

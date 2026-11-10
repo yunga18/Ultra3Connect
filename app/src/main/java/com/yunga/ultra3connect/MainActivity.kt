@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -47,6 +48,10 @@ private val Panel = Color(0xFF151D26)
 private val Green = Color(0xFF8BE36A)
 private val Muted = Color(0xFF9AA8B5)
 
+private val UART_SERVICE = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9f")
+private val UART_RX = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9f")
+private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
 class MainActivity : ComponentActivity() {
     private val devices = mutableStateListOf<BluetoothDevice>()
     private val deviceNames = mutableStateMapOf<String, String>()
@@ -61,6 +66,11 @@ class MainActivity : ComponentActivity() {
     private var status by mutableStateOf("Listo para buscar dispositivos")
     private var battery by mutableStateOf("Sin lectura")
     private var characteristicValue by mutableStateOf("Selecciona una característica para leerla")
+    private var uartState by mutableStateOf("Sin activar")
+    private var uartSubscribed by mutableStateOf(false)
+    private var uartPendingEnabled: Boolean? = null
+    private var uartCount by mutableIntStateOf(0)
+    private val uartMessages = mutableStateListOf<String>()
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -134,6 +144,9 @@ class MainActivity : ComponentActivity() {
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         connected = false
                         services.clear()
+                        uartSubscribed = false
+                        uartPendingEnabled = null
+                        uartState = "Desconectado"
                         status = "BLE desconectado · GATT status=$statusCode"
                         addLog("Desconectado: status=$statusCode (conserva este dato para diagnóstico)")
                         try { g.close() } catch (_: Exception) {}
@@ -186,7 +199,41 @@ class MainActivity : ComponentActivity() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            runOnUiThread { addLog("Notificación ${characteristic.uuid}: ${value.toHex()}") }
+            runOnUiThread { recordNotification(g, characteristic, value) }
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ) {
+            val snapshot = characteristic.value?.copyOf() ?: byteArrayOf()
+            runOnUiThread { recordNotification(g, characteristic, snapshot) }
+        }
+
+        override fun onDescriptorWrite(
+            g: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            statusCode: Int
+        ) {
+            runOnUiThread {
+                if (g !== gatt || descriptor.uuid != CCCD_UUID ||
+                    descriptor.characteristic.uuid != UART_RX) return@runOnUiThread
+                val enabling = uartPendingEnabled ?: return@runOnUiThread
+                uartPendingEnabled = null
+                if (statusCode == BluetoothGatt.GATT_SUCCESS) {
+                    uartSubscribed = enabling
+                    uartState = if (enabling) "Escuchando notificaciones UART" else "Recepción detenida"
+                } else {
+                    uartState = "Error CCCD: GATT $statusCode"
+                    if (enabling) {
+                        uartSubscribed = false
+                        try { g.setCharacteristicNotification(descriptor.characteristic, false) }
+                        catch (_: Exception) {}
+                    }
+                }
+                addLog("Configuración UART: " + uartState)
+            }
         }
     }
 
@@ -209,7 +256,13 @@ class MainActivity : ComponentActivity() {
                     battery = battery,
                     logLines = logLines.toList(),
                     characteristicValue = characteristicValue,
+                    uartState = uartState,
+                    uartSubscribed = uartSubscribed,
+                    uartBusy = uartPendingEnabled != null,
+                    uartCount = uartCount,
+                    uartMessages = uartMessages.toList(),
                     rssiFor = { signalStrengths[it] },
+                    onToggleUart = { toggleUartSubscription() },
                     onScan = { if (scanning) stopScan() else requestPermissionsAndScan() },
                     onDirectConnect = { requestDirectConnect(it) },
                     onConnect = { connectTo(it) },
@@ -341,6 +394,11 @@ class MainActivity : ComponentActivity() {
             connected = false
             services.clear()
             battery = "Sin lectura"
+            uartSubscribed = false
+            uartPendingEnabled = null
+            uartCount = 0
+            uartMessages.clear()
+            uartState = "Sin activar"
             selectedAddress = device.address
             status = "Conectando a " + device.address
             addLog(status)
@@ -384,6 +442,84 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun recordNotification(
+        sourceGatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray
+    ) {
+        if (sourceGatt !== gatt) return
+        val hex = value.toHex()
+        addLog("Notificación ${characteristic.uuid}: $hex")
+        if (characteristic.uuid == UART_RX && characteristic.service.uuid == UART_SERVICE) {
+            uartCount++
+            val ascii = value.joinToString("") { b ->
+                val ch = b.toInt() and 0xFF
+                if (ch in 32..126) ch.toChar().toString() else "."
+            }
+            uartMessages.add(0, "HEX: $hex" + if (ascii.isNotEmpty()) "\nASCII: $ascii" else "")
+            while (uartMessages.size > 40) uartMessages.removeAt(uartMessages.lastIndex)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun toggleUartSubscription() {
+        val current = gatt
+        if (!connected || current == null) {
+            uartState = "Conecta primero el reloj"
+            return
+        }
+        if (uartPendingEnabled != null) return
+        val target = current.getService(UART_SERVICE)?.getCharacteristic(UART_RX)
+        if (target == null) {
+            uartState = "Servicio UART o característica RX no disponibles"
+            addLog(uartState)
+            return
+        }
+        if (target.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY == 0) {
+            uartState = "La característica RX no admite NOTIFY"
+            addLog(uartState)
+            return
+        }
+        val descriptor = target.getDescriptor(CCCD_UUID)
+        if (descriptor == null) {
+            uartState = "No existe descriptor CCCD 0x2902"
+            addLog(uartState)
+            return
+        }
+        val enable = !uartSubscribed
+        try {
+            if (!current.setCharacteristicNotification(target, enable)) {
+                uartState = "No se pudo configurar la recepción local"
+                addLog(uartState)
+                return
+            }
+            val bytes = if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+            uartPendingEnabled = enable
+            uartState = if (enable) "Activando notificaciones..." else "Deteniendo recepción..."
+            val started = if (Build.VERSION.SDK_INT >= 33) {
+                current.writeDescriptor(descriptor, bytes) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                descriptor.value = bytes
+                @Suppress("DEPRECATION")
+                current.writeDescriptor(descriptor)
+            }
+            if (!started) {
+                uartPendingEnabled = null
+                uartState = "No se pudo iniciar la escritura del CCCD"
+                if (enable) current.setCharacteristicNotification(target, false)
+                addLog(uartState)
+            } else {
+                addLog("Enviando configuración CCCD UART: " + (if (enable) "activar" else "desactivar"))
+            }
+        } catch (e: Exception) {
+            uartPendingEnabled = null
+            uartState = "Error configurando UART: " + (e.message ?: e.javaClass.simpleName)
+            addLog(uartState)
+        }
+    }
+
     private fun addLog(message: String) {
         logLines.add(0, message)
         while (logLines.size > 80) logLines.removeAt(logLines.lastIndex)
@@ -402,7 +538,10 @@ private fun UltraApp(
     devices: List<BluetoothDevice>, nameFor: (String) -> String,
     selectedAddress: String?, services: List<BluetoothGattService>,
     battery: String, logLines: List<String>, characteristicValue: String,
+    uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
+    uartCount: Int, uartMessages: List<String>,
     rssiFor: (String) -> Int?,
+    onToggleUart: () -> Unit,
     onScan: () -> Unit, onDirectConnect: (String) -> Unit, onConnect: (BluetoothDevice) -> Unit,
     onDisconnect: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
@@ -425,7 +564,10 @@ private fun UltraApp(
             when (tab) {
                 0 -> DeviceScreen(status, scanning, connected, devices, nameFor, selectedAddress,
                     battery, rssiFor, onScan, onDirectConnect, onConnect, onDisconnect)
-                1 -> ServicesScreen(services, characteristicValue, onRead)
+                1 -> ServicesScreen(
+                    services, characteristicValue, connected, uartState, uartSubscribed,
+                    uartBusy, uartCount, uartMessages, onToggleUart, onRead
+                )
                 else -> LogScreen(logLines)
             }
         }
@@ -507,9 +649,38 @@ private fun DeviceScreen(
 
 @Composable
 private fun ServicesScreen(
-    services: List<BluetoothGattService>, value: String,
+    services: List<BluetoothGattService>, value: String, connected: Boolean,
+    uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
+    uartCount: Int, uartMessages: List<String>, onToggleUart: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
 ) {
+    Text("RECEPCIÓN UART", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Spacer(Modifier.height(8.dp))
+    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text(uartState, color = if (uartSubscribed) Green else Muted, fontWeight = FontWeight.SemiBold)
+            Text("Paquetes recibidos: $uartCount", fontSize = 13.sp, color = Muted)
+            Spacer(Modifier.height(8.dp))
+            Button(
+                enabled = connected && !uartBusy && services.any { it.uuid == UART_SERVICE },
+                onClick = onToggleUart
+            ) {
+                Text(if (uartSubscribed) "Detener recepción" else "Activar recepción UART")
+            }
+            Text(
+                "Escucha solamente datos enviados por el reloj. No envía órdenes ni usa OTA.",
+                fontSize = 11.sp, color = Muted
+            )
+            if (uartMessages.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                uartMessages.take(5).forEach { message ->
+                    Text(message, fontSize = 11.sp, color = Green)
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
     Text("SERVICIOS GATT", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
     Spacer(Modifier.height(8.dp))
     Text(value, color = Green, fontSize = 12.sp)
@@ -528,7 +699,9 @@ private fun ServicesScreen(
                                 Text(characteristic.uuid.toString(), fontSize = 11.sp)
                                 Text(propertiesText(characteristic), color = Muted, fontSize = 10.sp)
                             }
-                            TextButton(onClick = { onRead(service, characteristic) }) { Text("Leer") }
+                            if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
+                                TextButton(onClick = { onRead(service, characteristic) }) { Text("Leer") }
+                            }
                         }
                     }
                 }
