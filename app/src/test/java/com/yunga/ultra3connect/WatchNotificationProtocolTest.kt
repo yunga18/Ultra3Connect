@@ -12,9 +12,18 @@ class WatchNotificationProtocolTest {
         val packet = WatchNotificationProtocol.pushNotification(
             WatchNotificationProtocol.Type.WHATSAPP, "Ultra3: mensaje de prueba")
         assertArrayEquals(hex(
-            "DF 00 21 45 02 10 12 00 1C 05 00 00 55 6C 74 72 61 33 3A 20 " +
+            "DF 00 21 48 02 10 12 00 1C 08 00 00 55 6C 74 72 61 33 3A 20 " +
             "6D 65 6E 73 61 6A 65 20 64 65 20 70 72 75 65 62 61"
         ), packet)
+    }
+
+    @Test fun applicationCodesMatchHryFineApk() {
+        assertEquals(8, WatchNotificationProtocol.Type.WHATSAPP.code)
+        assertEquals(5, WatchNotificationProtocol.Type.TWITTER.code)
+        assertEquals(21, WatchNotificationProtocol.Type.TELEGRAM.code)
+        val twitter = WatchNotificationProtocol.pushNotification(
+            WatchNotificationProtocol.Type.TWITTER, "Mensaje de prueba")
+        assertEquals(5, twitter[9].toInt() and 255)
     }
 
     @Test fun fragmentRoundtrip() {

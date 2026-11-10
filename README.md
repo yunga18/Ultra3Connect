@@ -158,3 +158,9 @@ Se analizó el registro HCI enviado por el propietario el 10 de noviembre de 202
 - Debes conectar Ultra 3 y activar recepción UART antes de pulsarlo.
 - El botón todavía NO lee WhatsApp ni otros mensajes privados, NO solicita permiso para notificaciones Android y NO funciona en segundo plano.
 - Envío BLE exitoso NO garantiza visualización en el reloj hasta realizar la prueba física. No se envían comandos OTA.
+
+## Versión 1.1.1 — Corrección de iconos de notificaciones
+- La v1.1.0 envió una notificación visible pero mostró el icono de **X/Twitter** en vez de WhatsApp.
+- En el `base.apk` proporcionado, `MsgPushHelper.getType` y `getNewType` asignan **Twitter = 5** y **WhatsApp = 8**. Coincide con la observación en el reloj.
+- El botón de prueba ahora envía tipo **8** y conserva intactos el mensaje ficticio, CMD 02 SUB 12, los fragmentos BLE y las comprobaciones.
+- Pruebas automatizadas actualizadas con el nuevo checksum; queda comprobar visualmente el icono de WhatsApp en el reloj real.

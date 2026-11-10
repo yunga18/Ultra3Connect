@@ -1,8 +1,12 @@
 package com.yunga.ultra3connect
 
-/** Interoperability prototype: HryFine CMD=02 / SUB=12; watch display not yet verified. */
+/**
+ * HryFine CMD=02/SUB=12. The user verified that the watch displays a test message.
+ * Icon mappings come from the uploaded HryFine APK, MsgPushHelper.getType/getNewType.
+ * On this Ultra 3, code 5 displays X/Twitter; WhatsApp must use code 8.
+ */
 object WatchNotificationProtocol {
-    enum class Type(val code: Int) { SMS(0), WHATSAPP(5), TELEGRAM(21), OTHER(22) }
+    enum class Type(val code: Int) { SMS(0), TWITTER(5), WHATSAPP(8), TELEGRAM(21), OTHER(13) }
 
     fun pushNotification(type: Type, message: String): ByteArray {
         val body = validUtf8Prefix(message, 196)
