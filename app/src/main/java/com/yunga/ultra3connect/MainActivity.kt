@@ -85,6 +85,12 @@ class MainActivity : ComponentActivity() {
     private val notificationAppAllowed = mutableStateMapOf<String, Boolean>()
     private var notificationForwardedCount by mutableIntStateOf(0)
     private var notificationDroppedCount by mutableIntStateOf(0)
+    private var notificationDetectedCount by mutableIntStateOf(0)
+    private var notificationListenerStatus by mutableStateOf("Sin eventos recibidos desde Android")
+    private var remoteDisconnectCount by mutableIntStateOf(0)
+    private var reconnectAttempt by mutableIntStateOf(0)
+    private var intentionalDisconnect = false
+    private var retryGeneration = 0
     private val notificationQueue = ArrayDeque<IncomingWatchNotice>()
     private val maximumPendingNotifications = 8
     private lateinit var measurementStore: LocalMeasurementStore
@@ -178,6 +184,12 @@ class MainActivity : ComponentActivity() {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         connected = true
+                        val connection = g
+                        window.decorView.postDelayed({
+                            if (gatt === connection && connected) {
+                                reconnectAttempt = 0
+                            }
+                        }, 45000L)
                         status = "BLE conectado · status=$statusCode · descubriendo servicios"
                         addLog("Conexión GATT abierta, solicitando servicios")
                         try {
@@ -194,7 +206,8 @@ class MainActivity : ComponentActivity() {
                         notifyTestBusy = false
                         notificationQueue.clear()
                         if (statusCode == 19) {
-                            addLog("GATT 19: desconexión desde el extremo remoto; causa exacta no determinada")
+                            remoteDisconnectCount++
+                            addLog("GATT 19: reloj cerró el enlace BLE; causa exacta no determinada")
                         }
                         connected = false
                         services.clear()
@@ -214,6 +227,29 @@ class MainActivity : ComponentActivity() {
                         addLog("Desconectado: status=$statusCode (conserva este dato para diagnóstico)")
                         try { g.close() } catch (_: Exception) {}
                         if (gatt === g) gatt = null
+                        if (statusCode == 19 && !intentionalDisconnect &&
+                            reconnectAttempt < 3 && selectedAddress != null) {
+                            val address = selectedAddress!!
+                            reconnectAttempt++
+                            val attempt = reconnectAttempt
+                            val generation = retryGeneration
+                            val delayMs = (attempt * 3500L)
+                            status = "Reconexión controlada $attempt/3 en unos segundos"
+                            addLog("Reconexión programada: intento $attempt/3 tras GATT 19")
+                            window.decorView.postDelayed({
+                                if (generation == retryGeneration && !intentionalDisconnect &&
+                                    !connected && gatt == null) {
+                                    try {
+                                        val manager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
+                                        val device = manager.adapter?.getRemoteDevice(address)
+                                        if (device != null) connectTo(device, automaticRetry = true)
+                                    } catch (e: Exception) {
+                                        addLog("Reconexión no iniciada: " +
+                                            (e.message ?: e.javaClass.simpleName))
+                                    }
+                                }
+                            }, delayMs)
+                        }
                     }
                     else -> addLog("Estado GATT intermedio: " + newState)
                 }
@@ -222,18 +258,21 @@ class MainActivity : ComponentActivity() {
 
         override fun onServicesDiscovered(g: BluetoothGatt, statusCode: Int) {
             runOnUiThread {
+                if (g !== gatt) return@runOnUiThread
                 if (statusCode == BluetoothGatt.GATT_SUCCESS) {
                     services.clear()
                     services.addAll(g.services)
                     status = "${services.size} servicios encontrados"
                     addLog(status)
-                    val batteryChar = g.getService(UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb"))
-                        ?.getCharacteristic(UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb"))
-                    if (batteryChar != null && batteryChar.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
-                        try {
-                            @SuppressLint("MissingPermission")
-                            g.readCharacteristic(batteryChar)
-                        } catch (_: SecurityException) { addLog("Sin permiso para leer batería") }
+                    // The earlier builds waited for a manual tap. Some watch
+                    // sessions ended remotely before that happened. Subscribe
+                    // as soon as the services are ready.
+                    if (g.getService(UART_SERVICE)?.getCharacteristic(UART_RX) != null) {
+                        addLog("Activando UART automáticamente tras descubrir servicios")
+                        toggleUartSubscription()
+                    } else {
+                        addLog("No se encontró UART; leyendo batería solamente")
+                        readBatteryAfterInitialization(g)
                     }
                 } else {
                     status = "No se pudieron descubrir servicios: $statusCode"
@@ -249,6 +288,7 @@ class MainActivity : ComponentActivity() {
             statusCode: Int
         ) {
             runOnUiThread {
+                if (g !== gatt) return@runOnUiThread
                 characteristicValue = if (statusCode == BluetoothGatt.GATT_SUCCESS) value.toHex()
                     else "Error de lectura: $statusCode"
                 addLog("Lectura ${characteristic.uuid}: $characteristicValue")
@@ -313,6 +353,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     addLog("Configuración UART: " + uartState)
+                    // Read the battery only after the CCCD write finishes,
+                    // avoiding concurrent GATT transactions.
+                    readBatteryAfterInitialization(g)
                 } else if (ch.uuid == EXTRA_NOTIFY && ch.service.uuid == EXTRA_SERVICE) {
                     val enabling = extraPendingEnabled ?: return@runOnUiThread
                     extraPendingEnabled = null
@@ -344,6 +387,13 @@ class MainActivity : ComponentActivity() {
         WatchNotificationBridge.receiver = { notice ->
             runOnUiThread { handleIncomingWatchNotice(notice) }
         }
+        WatchNotificationBridge.diagnostic = { reason ->
+            runOnUiThread {
+                notificationListenerStatus = reason
+                if (reason.startsWith("Android detectó")) notificationDetectedCount++
+                addLog("Avisos Android: " + reason)
+            }
+        }
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -365,6 +415,10 @@ class MainActivity : ComponentActivity() {
                     notificationAppAllowed = notificationAppAllowed.toMap(),
                     notificationForwardedCount = notificationForwardedCount,
                     notificationDroppedCount = notificationDroppedCount,
+                    notificationDetectedCount = notificationDetectedCount,
+                    notificationListenerStatus = notificationListenerStatus,
+                    remoteDisconnectCount = remoteDisconnectCount,
+                    reconnectAttempt = reconnectAttempt,
                     onOpenNotificationAccess = {
                         try {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -432,6 +486,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         notificationAccessGranted = NotificationManagerCompat
             .getEnabledListenerPackages(this).contains(packageName)
+        if (!notificationAccessGranted && notificationForwardEnabled) {
+            notificationForwardEnabled = false
+            watchNotificationSettings.setEnabled(false)
+            notificationListenerStatus = "Permiso Android no disponible. Reenvío desactivado."
+        }
     }
 
     private fun requestPermissionsAndScan() {
@@ -546,7 +605,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun connectTo(device: BluetoothDevice) {
+    private fun connectTo(device: BluetoothDevice, automaticRetry: Boolean = false) {
+        if (!automaticRetry) reconnectAttempt = 0
+        intentionalDisconnect = false
+        retryGeneration++
         try {
             stopScan()
             gatt?.disconnect()
@@ -601,6 +663,9 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     private fun disconnect() {
+        intentionalDisconnect = true
+        retryGeneration++
+        reconnectAttempt = 0
         addLog("Desconexión solicitada por el usuario")
         try { gatt?.disconnect() } catch (_: SecurityException) {
             addLog("Permiso denegado al desconectar")
@@ -1008,6 +1073,24 @@ class MainActivity : ComponentActivity() {
         sendPart(0)
     }
 
+    @SuppressLint("MissingPermission")
+    private fun readBatteryAfterInitialization(current: BluetoothGatt) {
+        if (current !== gatt || !connected) return
+        val service = current.getService(UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb"))
+        val characteristic = service?.getCharacteristic(
+            UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
+        )
+        if (characteristic != null &&
+            characteristic.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
+            try {
+                if (!current.readCharacteristic(characteristic))
+                    addLog("No se pudo iniciar lectura de batería")
+            } catch (e: Exception) {
+                addLog("Error lectura de batería: " + (e.message ?: e.javaClass.simpleName))
+            }
+        }
+    }
+
     private fun markActivityEvent(kind: String) {
         val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
         val message = "MARCADOR MANUAL: $kind (no envía órdenes al reloj)"
@@ -1027,6 +1110,9 @@ class MainActivity : ComponentActivity() {
         notifyTestBusy = false
         notificationQueue.clear()
         WatchNotificationBridge.receiver = null
+        WatchNotificationBridge.diagnostic = null
+        intentionalDisconnect = true
+        retryGeneration++
         stopScan()
         try { gatt?.close() } catch (_: Exception) {}
         super.onDestroy()
