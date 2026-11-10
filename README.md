@@ -132,3 +132,14 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 - No se recupera el historial de versiones anteriores, que no guardaban mediciones en el teléfono.
 - Las lecturas provienen del reloj genérico y **no deben utilizarse para diagnóstico ni decisiones médicas**.
 - No se envían nuevos comandos propietarios ni se modifica el firmware.
+
+## Versión 1.0.0 — Solicitar mediciones desde Ultra 3 Connect
+Se analizó el registro HCI enviado por el propietario el 10 de noviembre de 2026 y se aislaron las órdenes de HryFine:
+- Pulso: `DF 00 06 06 02 10 0D 00 01 01`. En la captura, HryFine la envió y el reloj respondió ~5 segundos después con CMD 05 SUB 04.
+- Presión: `DF 00 06 07 02 10 0E 00 01 01`. En la captura, el reloj respondió ~11 segundos después con CMD 05 SUB 05.
+- Escribir en Nordic UART `6E400002` usando WRITE_NO_RESPONSE; escuchar `6E400003`. Esta correspondencia se verificó con la tabla GATT del dispositivo.
+- En **Dispositivo**, activar primero **recepción de lecturas**, luego pulsar **Medir pulso** o **Medir presión**.
+- La aplicación no inicia mediciones automáticamente, impide solicitudes simultáneas, registra la confirmación FD (si se recibe) y espera hasta 45 segundos por una respuesta válida.
+- Si no recibe respuesta, no reintenta ni envía comandos alternativos. Los controles se prueban en el teléfono real.
+- No se incluyen otros comandos de la captura (ID de vinculación, perfil, ajuste de tiempo, firmware, factory reset, etc.) y el ZIP original privado **no** se subió al repositorio.
+- Los datos de salud del reloj siguen sin validación clínica: no utilizarlos para diagnosticar ni tomar decisiones médicas.

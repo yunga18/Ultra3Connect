@@ -60,6 +60,7 @@ private val Muted = Color(0xFF9AA8B5)
 
 private val UART_SERVICE = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9f")
 private val UART_RX = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9f")
+private val UART_WRITE = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9f")
 private val EXTRA_SERVICE = UUID.fromString("0000ff12-0000-1000-8000-00805f9b34fb")
 private val EXTRA_NOTIFY = UUID.fromString("0000ff14-0000-1000-8000-00805f9b34fb")
 private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -91,6 +92,9 @@ class MainActivity : ComponentActivity() {
     private val dfFrameMessages = mutableStateListOf<String>()
     private var heartCandidate by mutableStateOf("Sin datos")
     private var pressureCandidate by mutableStateOf("Sin datos")
+    private var measurementRequestStatus by mutableStateOf("Activa la recepción UART antes de iniciar una medición")
+    private var pendingMeasurement by mutableStateOf<ExperimentalVitalDecoder.Kind?>(null)
+    private var measurementRequestToken = 0
     private var lastCounterCandidate: Int? = null
     private var lastCounterTimestampMs: Long? = null
     private var extraState by mutableStateOf("Sin activar")
@@ -174,6 +178,9 @@ class MainActivity : ComponentActivity() {
                         uartSubscribed = false
                         uartPendingEnabled = null
                         uartState = "Desconectado"
+                        pendingMeasurement = null
+                        measurementRequestToken++
+                        measurementRequestStatus = "Sin conexión con el reloj"
                         extraSubscribed = false
                         extraPendingEnabled = null
                         extraState = "Desconectado"
@@ -239,6 +246,23 @@ class MainActivity : ComponentActivity() {
         ) {
             val snapshot = characteristic.value?.copyOf() ?: byteArrayOf()
             runOnUiThread { recordNotification(g, characteristic, snapshot) }
+        }
+
+        override fun onCharacteristicWrite(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            statusCode: Int
+        ) {
+            runOnUiThread {
+                if (g !== gatt || characteristic.uuid != UART_WRITE ||
+                    characteristic.service.uuid != UART_SERVICE) return@runOnUiThread
+                if (statusCode != BluetoothGatt.GATT_SUCCESS) {
+                    pendingMeasurement = null
+                    measurementRequestToken++
+                    measurementRequestStatus = "Error enviando solicitud: GATT $statusCode"
+                    addLog(measurementRequestStatus)
+                } else addLog("Confirmación local de escritura UART: GATT $statusCode")
+            }
         }
 
         override fun onDescriptorWrite(
@@ -321,6 +345,9 @@ class MainActivity : ComponentActivity() {
                     dfFrameMessages = dfFrameMessages.toList(),
                     heartCandidate = heartCandidate,
                     pressureCandidate = pressureCandidate,
+                    measurementRequestStatus = measurementRequestStatus,
+                    measurementInProgress = pendingMeasurement != null,
+                    onRequestMeasurement = { requestWatchMeasurement(it) },
                     extraState = extraState,
                     extraSubscribed = extraSubscribed,
                     extraBusy = extraPendingEnabled != null,
@@ -471,6 +498,9 @@ class MainActivity : ComponentActivity() {
             dfFrameMessages.clear()
             heartCandidate = "Sin datos"
             pressureCandidate = "Sin datos"
+            pendingMeasurement = null
+            measurementRequestToken++
+            measurementRequestStatus = "Activa la recepción UART antes de iniciar una medición"
             lastCounterCandidate = null
             lastCounterTimestampMs = null
             uartState = "Sin activar"
@@ -537,6 +567,11 @@ class MainActivity : ComponentActivity() {
         }
         if (characteristic.uuid == UART_RX && characteristic.service.uuid == UART_SERVICE) {
             uartCount++
+            val waitingFor = pendingMeasurement
+            if (waitingFor != null && WatchControlProtocol.isMeasurementAcknowledgment(value, waitingFor)) {
+                measurementRequestStatus = "El reloj respondió a la solicitud; esperando el resultado..."
+                addLog("ACK de solicitud " + measurementKindLabel(waitingFor) + " recibido")
+            }
             val completedFrames = dfAssembler.append(value)
             for (frame in completedFrames) {
                 dfFrameCount++
@@ -580,6 +615,12 @@ class MainActivity : ComponentActivity() {
                     savedMeasurements.add(0, entry)
                     while (savedMeasurements.size > 100) savedMeasurements.removeAt(savedMeasurements.lastIndex)
                     measurementStore.save(savedMeasurements)
+                    if (pendingMeasurement == experimentalReading.kind) {
+                        pendingMeasurement = null
+                        measurementRequestToken++
+                        measurementRequestStatus = "Recibido desde el reloj: " + experimentalReading.valueLabel
+                        addLog("Medición solicitada completada: " + experimentalReading.valueLabel)
+                    }
                 }
                 val label = "CMD=%02X SUB=%02X payload=%d checksum=%s [%s]%s".format(
                     Locale.US, frame.command, frame.subcommand,
@@ -716,6 +757,67 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun requestWatchMeasurement(kind: ExperimentalVitalDecoder.Kind) {
+        val current = gatt
+        if (current == null || !connected || !uartSubscribed) {
+            measurementRequestStatus = "Conecta el reloj y activa primero la recepción UART"
+            return
+        }
+        if (pendingMeasurement != null || uartPendingEnabled != null || extraPendingEnabled != null) {
+            measurementRequestStatus = "Ya hay una medición u operación Bluetooth en curso"
+            return
+        }
+        val characteristic = current.getService(UART_SERVICE)?.getCharacteristic(UART_WRITE)
+        if (characteristic == null || characteristic.properties and
+            BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE == 0) {
+            measurementRequestStatus = "El reloj no ofrece UART Write Without Response"
+            addLog(measurementRequestStatus)
+            return
+        }
+        val command = WatchControlProtocol.startMeasurementCommand(kind)
+        try {
+            val started = if (Build.VERSION.SDK_INT >= 33) {
+                current.writeCharacteristic(
+                    characteristic, command, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                ) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                characteristic.value = command
+                @Suppress("DEPRECATION")
+                current.writeCharacteristic(characteristic)
+            }
+            if (!started) {
+                measurementRequestStatus = "No se pudo enviar la solicitud al reloj"
+                addLog(measurementRequestStatus)
+                return
+            }
+            pendingMeasurement = kind
+            measurementRequestToken++
+            val token = measurementRequestToken
+            measurementRequestStatus = "Solicitud enviada: " + measurementKindLabel(kind) +
+                ". Esperando respuesta del reloj..."
+            addLog("Solicitud HCI verificada: " + command.toHex() + " (inicio de " +
+                measurementKindLabel(kind) + ")")
+            window.decorView.postDelayed({
+                if (gatt === current && measurementRequestToken == token && pendingMeasurement == kind) {
+                    pendingMeasurement = null
+                    measurementRequestToken++
+                    measurementRequestStatus =
+                        "Sin resultado tras 45 s; verifica el registro. No se reintentó automáticamente."
+                    addLog(measurementRequestStatus)
+                }
+            }, 45000L)
+        } catch (e: Exception) {
+            pendingMeasurement = null
+            measurementRequestToken++
+            measurementRequestStatus = "Error enviando comando: " + (e.message ?: e.javaClass.simpleName)
+            addLog(measurementRequestStatus)
+        }
+    }
+
     private fun markActivityEvent(kind: String) {
         val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
         val message = "MARCADOR MANUAL: $kind (no envía órdenes al reloj)"
@@ -748,6 +850,8 @@ private fun UltraApp(
     uartCount: Int, uartMessages: List<String>,
     dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
     heartCandidate: String, pressureCandidate: String,
+    measurementRequestStatus: String, measurementInProgress: Boolean,
+    onRequestMeasurement: (ExperimentalVitalDecoder.Kind) -> Unit,
     extraState: String, extraSubscribed: Boolean, extraBusy: Boolean,
     extraCount: Int, extraMessages: List<String>,
     rssiFor: (String) -> Int?,
@@ -777,6 +881,7 @@ private fun UltraApp(
                 0 -> DeviceScreen(status, scanning, connected, devices, nameFor, selectedAddress,
                     battery, rssiFor, savedMeasurements, uartSubscribed, uartBusy,
                     services.any { it.uuid == UART_SERVICE }, onToggleUart,
+                    measurementRequestStatus, measurementInProgress, onRequestMeasurement,
                     onScan, onDirectConnect, onConnect, onDisconnect)
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
@@ -798,6 +903,8 @@ private fun DeviceScreen(
     rssiFor: (String) -> Int?,
     savedMeasurements: List<StoredMeasurement>, uartSubscribed: Boolean,
     uartBusy: Boolean, uartAvailable: Boolean, onToggleUart: () -> Unit,
+    measurementRequestStatus: String, measurementInProgress: Boolean,
+    onRequestMeasurement: (ExperimentalVitalDecoder.Kind) -> Unit,
     onScan: () -> Unit, onDirectConnect: (String) -> Unit,
     onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit
 ) {
@@ -858,9 +965,29 @@ private fun DeviceScreen(
             )
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
-                enabled = connected && uartAvailable && !uartBusy,
+                enabled = connected && uartAvailable && !uartBusy && !measurementInProgress,
                 onClick = onToggleUart
             ) { Text(if (uartSubscribed) "Detener captura de lecturas" else "Activar recepción de lecturas") }
+            Spacer(Modifier.height(8.dp))
+            Text("SOLICITAR UNA MEDICIÓN", color = Green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(5.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    enabled = connected && uartSubscribed && !uartBusy && !measurementInProgress,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onRequestMeasurement(ExperimentalVitalDecoder.Kind.HEART_RATE) }
+                ) { Text("Medir pulso", fontSize = 12.sp) }
+                Button(
+                    enabled = connected && uartSubscribed && !uartBusy && !measurementInProgress,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onRequestMeasurement(ExperimentalVitalDecoder.Kind.BLOOD_PRESSURE) }
+                ) { Text("Medir presión", fontSize = 12.sp) }
+            }
+            Text(measurementRequestStatus, color = Muted, fontSize = 11.sp)
+            Text(
+                "Comandos capturados de HryFine. Se envían solo cuando pulsas un botón.",
+                color = Muted, fontSize = 10.sp
+            )
         }
     }
     Spacer(Modifier.height(12.dp))
