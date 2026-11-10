@@ -143,3 +143,10 @@ Se analizó el registro HCI enviado por el propietario el 10 de noviembre de 202
 - Si no recibe respuesta, no reintenta ni envía comandos alternativos. Los controles se prueban en el teléfono real.
 - No se incluyen otros comandos de la captura (ID de vinculación, perfil, ajuste de tiempo, firmware, factory reset, etc.) y el ZIP original privado **no** se subió al repositorio.
 - Los datos de salud del reloj siguen sin validación clínica: no utilizarlos para diagnosticar ni tomar decisiones médicas.
+
+## Versión 1.0.1 — Corrección de desplazamiento en teléfonos
+- Se corrige un fallo de UI en pantallas compactas: en **Dispositivo** la zona de mediciones ocupaba el alto disponible e impedía deslizarse hasta el campo MAC y la lista de dispositivos BLE.
+- El contenido de **Dispositivo** ahora se desplaza verticalmente dentro del área visible, respetando la barra de navegación inferior.
+- La lista de BLE utiliza una columna regular en esa pantalla para evitar LazyColumns anidadas dentro de un área de altura ilimitada.
+- Cuando se detecta un periférico con nombre exacto **Ultra 3**, se muestra el acceso rápido **Conectar Ultra 3 detectado** debajo de la tarjeta de conexión.
+- Ninguna característica GATT, UUID, comando DF ni mecanismo de lectura cambia en esta versión.

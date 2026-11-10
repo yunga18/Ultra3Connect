@@ -28,6 +28,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -878,11 +880,18 @@ private fun UltraApp(
             Text("Connect", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
             when (tab) {
-                0 -> DeviceScreen(status, scanning, connected, devices, nameFor, selectedAddress,
-                    battery, rssiFor, savedMeasurements, uartSubscribed, uartBusy,
-                    services.any { it.uuid == UART_SERVICE }, onToggleUart,
-                    measurementRequestStatus, measurementInProgress, onRequestMeasurement,
-                    onScan, onDirectConnect, onConnect, onDisconnect)
+                0 -> Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    DeviceScreen(status, scanning, connected, devices, nameFor, selectedAddress,
+                        battery, rssiFor, savedMeasurements, uartSubscribed, uartBusy,
+                        services.any { it.uuid == UART_SERVICE }, onToggleUart,
+                        measurementRequestStatus, measurementInProgress, onRequestMeasurement,
+                        onScan, onDirectConnect, onConnect, onDisconnect)
+                }
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
                     uartBusy || extraBusy, uartCount, uartMessages,
@@ -929,6 +938,22 @@ private fun DeviceScreen(
                 Button(onClick = if (connected) onDisconnect else onScan,
                     colors = ButtonDefaults.buttonColors(containerColor = Green)) {
                     Text(if (connected) "Desconectar" else if (scanning) "Detener" else "Buscar reloj")
+                }
+            }
+            // Short path back into the device on smaller phones: the list still
+            // appears further down in the scrollable Dispositivo screen.
+            val discoveredUltra3 = devices.firstOrNull {
+                nameFor(it.address).equals("Ultra 3", ignoreCase = true)
+            }
+            if (!connected && discoveredUltra3 != null) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { onConnect(discoveredUltra3) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Bluetooth, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Conectar Ultra 3 detectado")
                 }
             }
         }
@@ -1013,8 +1038,10 @@ private fun DeviceScreen(
         compareByDescending<BluetoothDevice> { nameFor(it.address).contains("ultra", ignoreCase = true) }
             .thenByDescending { rssiFor(it.address) ?: -127 }
     )
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(orderedDevices, key = { it.address }) { device ->
+    // This list is part of a vertically scrollable device screen; nesting
+    // LazyColumn here would receive unbounded height and break scrolling.
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        orderedDevices.forEach { device ->
             val address = device.address
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { onConnect(device) },
@@ -1028,6 +1055,7 @@ private fun DeviceScreen(
             }
         }
     }
+    Spacer(Modifier.height(12.dp))
 }
 
 @Composable
