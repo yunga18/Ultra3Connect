@@ -20,6 +20,8 @@ import android.content.pm.PackageManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -41,6 +43,8 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Notifications
+import androidx.core.app.NotificationManagerCompat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -75,6 +79,14 @@ class MainActivity : ComponentActivity() {
     private val services = mutableStateListOf<BluetoothGattService>()
     private val logLines = mutableStateListOf<String>()
     private val savedMeasurements = mutableStateListOf<StoredMeasurement>()
+    private lateinit var watchNotificationSettings: WatchNotificationSettings
+    private var notificationAccessGranted by mutableStateOf(false)
+    private var notificationForwardEnabled by mutableStateOf(false)
+    private val notificationAppAllowed = mutableStateMapOf<String, Boolean>()
+    private var notificationForwardedCount by mutableIntStateOf(0)
+    private var notificationDroppedCount by mutableIntStateOf(0)
+    private val notificationQueue = ArrayDeque<IncomingWatchNotice>()
+    private val maximumPendingNotifications = 8
     private lateinit var measurementStore: LocalMeasurementStore
     private var gatt: BluetoothGatt? = null
     private var connected by mutableStateOf(false)
@@ -178,6 +190,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
+                        notifyTestToken++
+                        notifyTestBusy = false
+                        notificationQueue.clear()
+                        if (statusCode == 19) {
+                            addLog("GATT 19: desconexión desde el extremo remoto; causa exacta no determinada")
+                        }
                         connected = false
                         services.clear()
                         uartSubscribed = false
@@ -318,6 +336,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         measurementStore = LocalMeasurementStore(this)
         savedMeasurements.addAll(measurementStore.load())
+        watchNotificationSettings = WatchNotificationSettings(this)
+        notificationForwardEnabled = watchNotificationSettings.enabled()
+        WatchNotificationSources.supported.forEach {
+            notificationAppAllowed[it.key] = watchNotificationSettings.allowed(it.key)
+        }
+        WatchNotificationBridge.receiver = { notice ->
+            runOnUiThread { handleIncomingWatchNotice(notice) }
+        }
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -334,6 +360,30 @@ class MainActivity : ComponentActivity() {
                     services = services.toList(),
                     battery = battery,
                     logLines = logLines.toList(),
+                    notificationAccessGranted = notificationAccessGranted,
+                    notificationForwardEnabled = notificationForwardEnabled,
+                    notificationAppAllowed = notificationAppAllowed.toMap(),
+                    notificationForwardedCount = notificationForwardedCount,
+                    notificationDroppedCount = notificationDroppedCount,
+                    onOpenNotificationAccess = {
+                        try {
+                            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                        } catch (e: Exception) {
+                            addLog("No se pudo abrir ajustes de notificaciones: " +
+                                (e.message ?: e.javaClass.simpleName))
+                        }
+                    },
+                    onNotificationMasterChange = { enable ->
+                        notificationForwardEnabled = enable && notificationAccessGranted
+                        watchNotificationSettings.setEnabled(notificationForwardEnabled)
+                        addLog("Reenvío de notificaciones: " +
+                            if (notificationForwardEnabled) "activado" else "desactivado")
+                    },
+                    onNotificationAppChange = { key, enable ->
+                        notificationAppAllowed[key] = enable
+                        watchNotificationSettings.setAllowed(key, enable)
+                        addLog("Permiso local de " + key + ": " + if (enable) "sí" else "no")
+                    },
                     savedMeasurements = savedMeasurements.toList(),
                     onClearMeasurements = {
                         measurementStore.clear()
@@ -376,6 +426,12 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        notificationAccessGranted = NotificationManagerCompat
+            .getEnabledListenerPackages(this).contains(packageName)
     }
 
     private fun requestPermissionsAndScan() {
@@ -514,6 +570,7 @@ class MainActivity : ComponentActivity() {
             measurementRequestStatus = "Activa la recepción UART antes de iniciar una medición"
             notifyTestToken++
             notifyTestBusy = false
+            notificationQueue.clear()
             notifyTestStatus = "Prueba manual sin acceso a tus mensajes"
             lastCounterCandidate = null
             lastCounterTimestampMs = null
@@ -833,33 +890,76 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    @SuppressLint("MissingPermission")
+
+    /** The same transport handles explicit tests and consented Android messages. */
     private fun sendNotificationTest() {
+        enqueueWatchNotification(
+            IncomingWatchNotice(
+                WatchNotificationProtocol.Type.WHATSAPP,
+                "Prueba",
+                "Ultra3: mensaje de prueba"
+            ),
+            manual = true
+        )
+    }
+
+    private fun handleIncomingWatchNotice(notice: IncomingWatchNotice) {
+        if (!notificationForwardEnabled || !notificationAccessGranted) return
+        if (!connected || !uartSubscribed) {
+            notificationDroppedCount++
+            return
+        }
+        enqueueWatchNotification(notice, manual = false)
+    }
+
+    private fun enqueueWatchNotification(notice: IncomingWatchNotice, manual: Boolean) {
+        if (!connected || !uartSubscribed || gatt == null) {
+            if (manual) notifyTestStatus = "Conecta el reloj y activa recepción UART"
+            else notificationDroppedCount++
+            return
+        }
+        if (pendingMeasurement != null || uartPendingEnabled != null || extraPendingEnabled != null) {
+            if (manual) notifyTestStatus = "Hay una medición u operación BLE en curso"
+            else notificationDroppedCount++
+            return
+        }
+        if (notificationQueue.size >= maximumPendingNotifications) {
+            if (manual) notifyTestStatus = "Cola de mensajes llena"
+            else notificationDroppedCount++
+            return
+        }
+        notificationQueue.addLast(notice)
+        if (!notifyTestBusy) sendNextWatchNotification()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendNextWatchNotification() {
+        if (notifyTestBusy || notificationQueue.isEmpty()) return
         val current = gatt
         if (current == null || !connected || !uartSubscribed) {
-            notifyTestStatus = "Conecta el reloj y activa la recepción UART"
+            notificationDroppedCount += notificationQueue.size
+            notificationQueue.clear()
             return
         }
-        if (notifyTestBusy || pendingMeasurement != null ||
-            uartPendingEnabled != null || extraPendingEnabled != null) {
-            notifyTestStatus = "Hay una operación Bluetooth en curso"
+        val tx = current.getService(UART_SERVICE)?.getCharacteristic(UART_WRITE)
+        if (tx == null || tx.properties and
+            BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE == 0) {
+            notificationDroppedCount += notificationQueue.size
+            notificationQueue.clear()
+            notifyTestStatus = "El reloj no permite escritura UART"
             return
         }
-        val char = current.getService(UART_SERVICE)?.getCharacteristic(UART_WRITE)
-        if (char == null || char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE == 0) {
-            notifyTestStatus = "El reloj no permite escritura UART sin respuesta"
-            return
-        }
-        val frame = WatchNotificationProtocol.pushNotification(
-            WatchNotificationProtocol.Type.WHATSAPP, "Ultra3: mensaje de prueba"
-        )
-        val fragments = WatchNotificationProtocol.fragments(frame)
+        val notice = notificationQueue.removeFirst()
+        val frame = WatchNotificationProtocol.pushNotification(notice.type, notice.text)
+        val parts = WatchNotificationProtocol.fragments(frame)
         notifyTestToken++
         val token = notifyTestToken
         notifyTestBusy = true
-        notifyTestStatus = "Enviando mensaje ficticio..."
-        addLog("Notificación de prueba: DF CMD 02 SUB 12, solo contenido ficticio")
-        fun sendPart(i: Int) {
+        notifyTestStatus = "Enviando aviso: " + notice.source
+        // Deliberately do not log message titles or bodies.
+        addLog("Aviso para reloj: " + notice.source +
+            " · CMD 02 SUB 12 · " + parts.size + " fragmentos")
+        fun sendPart(index: Int) {
             if (token != notifyTestToken || gatt !== current || !connected) {
                 if (token == notifyTestToken) {
                     notifyTestBusy = false
@@ -870,31 +970,39 @@ class MainActivity : ComponentActivity() {
             try {
                 val ok = if (Build.VERSION.SDK_INT >= 33) {
                     current.writeCharacteristic(
-                        char, fragments[i], BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        tx, parts[index],
+                        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     ) == BluetoothStatusCodes.SUCCESS
                 } else {
                     @Suppress("DEPRECATION")
-                    char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    tx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     @Suppress("DEPRECATION")
-                    char.value = fragments[i]
+                    tx.value = parts[index]
                     @Suppress("DEPRECATION")
-                    current.writeCharacteristic(char)
+                    current.writeCharacteristic(tx)
                 }
                 if (!ok) {
                     notifyTestBusy = false
-                    notifyTestStatus = "Error en fragmento " + (i + 1)
-                    addLog(notifyTestStatus)
-                } else if (i + 1 < fragments.size) {
-                    window.decorView.postDelayed({ sendPart(i + 1) }, 160L)
+                    if (notice.source != "Prueba") notificationDroppedCount++
+                    notifyTestStatus = "Error transmitiendo aviso"
+                    addLog("Fallo enviando fragmento de " + notice.source)
+                    window.decorView.postDelayed({ sendNextWatchNotification() }, 200L)
+                } else if (index + 1 < parts.size) {
+                    window.decorView.postDelayed({ sendPart(index + 1) }, 160L)
                 } else {
                     notifyTestBusy = false
-                    notifyTestStatus = "Enviado por BLE; comprueba la pantalla del reloj"
-                    addLog("Test de notificación transmitido; recepción aún no confirmada")
+                    if (notice.source != "Prueba") notificationForwardedCount++
+                    notifyTestStatus = "Enviado por BLE: " + notice.source
+                    addLog("Aviso BLE enviado: " + notice.source +
+                        " (visualización en reloj no verificada)")
+                    window.decorView.postDelayed({ sendNextWatchNotification() }, 200L)
                 }
             } catch (e: Exception) {
                 notifyTestBusy = false
+                if (notice.source != "Prueba") notificationDroppedCount++
                 notifyTestStatus = "Error Bluetooth: " + (e.message ?: e.javaClass.simpleName)
-                addLog(notifyTestStatus)
+                addLog("Error enviando aviso " + notice.source)
+                window.decorView.postDelayed({ sendNextWatchNotification() }, 200L)
             }
         }
         sendPart(0)
@@ -917,6 +1025,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         notifyTestToken++
         notifyTestBusy = false
+        notificationQueue.clear()
+        WatchNotificationBridge.receiver = null
         stopScan()
         try { gatt?.close() } catch (_: Exception) {}
         super.onDestroy()
