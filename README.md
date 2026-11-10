@@ -103,3 +103,12 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 - Pruebas unitarias incluyen los dos mensajes reales capturados, reconstruidos con bytes finales `61` y `5A`.
 - No atribuye significado definitivo a CMD 05/SUB 0E o SUB 04 ni envía comandos a las características TX u OTA.
 - Nota: si otro reloj usa un protocolo diferente, el monitor puede no reconocer sus mensajes.
+
+## Versión 0.7.0 — Correlación de eventos y contador experimental
+- Muestra etiquetas **hipotéticas** para el protocolo de otros relojes compatibles: CMD 05 SUB 04 (pulso), SUB 05 (presión arterial), SUB 02 (pasos), SUB 0E (SpO2). Estas no son interpretaciones médicas validadas para este modelo.
+- Extrae como **campo candidato** los bytes 15–16 de las tramas de al menos 17 bytes e informa el incremento entre tramas válidas y los segundos transcurridos según reloj monotónico de Android.
+- Incluye botones **Marcar pulso** y **Marcar presión** para insertar marcadores de hora antes de realizar la medición desde la pantalla del reloj. Esos botones no activan mediciones ni mandan comandos.
+- Mantiene los datos crudos en HEX, su checksum y la opción Copiar tramas DF.
+- Cuarta prueba unitaria con las tramas capturadas a las 11:20:12 y 11:21:31; incremento hexadecimal 79 en el campo candidato, acorde con los 78,723 segundos transcurridos.
+- Referencia externa de la hipótesis de subcomandos: https://github.com/victorbillyph/chinese-smartwatch-homeassistant/blob/main/docs/PROTOCOL.md
+- No habilita comandos OTA, reseteos, ajustes ni escrituras propietarias.

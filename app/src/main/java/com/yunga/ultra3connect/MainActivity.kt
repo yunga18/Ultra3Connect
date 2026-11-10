@@ -22,6 +22,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -84,6 +85,8 @@ class MainActivity : ComponentActivity() {
     private var dfFrameCount by mutableIntStateOf(0)
     private var dfVerifiedCount by mutableIntStateOf(0)
     private val dfFrameMessages = mutableStateListOf<String>()
+    private var lastCounterCandidate: Int? = null
+    private var lastCounterTimestampMs: Long? = null
     private var extraState by mutableStateOf("Sin activar")
     private var extraSubscribed by mutableStateOf(false)
     private var extraPendingEnabled: Boolean? = null
@@ -307,6 +310,7 @@ class MainActivity : ComponentActivity() {
                     extraMessages = extraMessages.toList(),
                     rssiFor = { signalStrengths[it] },
                     onToggleUart = { toggleUartSubscription() },
+                    onMarkEvent = { markActivityEvent(it) },
                     onToggleExtra = { toggleExtraSubscription() },
                     onScan = { if (scanning) stopScan() else requestPermissionsAndScan() },
                     onDirectConnect = { requestDirectConnect(it) },
@@ -447,6 +451,8 @@ class MainActivity : ComponentActivity() {
             dfFrameCount = 0
             dfVerifiedCount = 0
             dfFrameMessages.clear()
+            lastCounterCandidate = null
+            lastCounterTimestampMs = null
             uartState = "Sin activar"
             extraSubscribed = false
             extraPendingEnabled = null
@@ -516,9 +522,30 @@ class MainActivity : ComponentActivity() {
                 dfFrameCount++
                 if (frame.isValid) dfVerifiedCount++
                 val result = if (frame.isValid) "OK" else "INVALID"
-                val label = "CMD=%02X SUB=%02X payload=%d checksum=%s".format(
+                val possibleKind = when {
+                    frame.command == 0x05 && frame.subcommand == 0x04 -> "hipótesis: pulso"
+                    frame.command == 0x05 && frame.subcommand == 0x05 -> "hipótesis: presión arterial"
+                    frame.command == 0x05 && frame.subcommand == 0x02 -> "hipótesis: pasos"
+                    frame.command == 0x05 && frame.subcommand == 0x0E -> "hipótesis: SpO2"
+                    else -> "sin clasificar"
+                }
+                val counterCandidate = frame.counterCandidate16Be
+                val timeNow = SystemClock.elapsedRealtime()
+                val counterNote = if (frame.isValid && counterCandidate != null) {
+                    val previousCounter = lastCounterCandidate
+                    val previousTimestamp = lastCounterTimestampMs
+                    val deltaNote = if (previousCounter != null && previousTimestamp != null) {
+                        val deltaCounter = (counterCandidate - previousCounter + 65536) % 65536
+                        val deltaSeconds = (timeNow - previousTimestamp) / 1000.0
+                        " · delta16=$deltaCounter vs dt=%.1fs".format(Locale.US, deltaSeconds)
+                    } else ""
+                    lastCounterCandidate = counterCandidate
+                    lastCounterTimestampMs = timeNow
+                    " · campo15-16=%04X".format(Locale.US, counterCandidate) + deltaNote
+                } else ""
+                val label = "CMD=%02X SUB=%02X payload=%d checksum=%s [%s]%s".format(
                     Locale.US, frame.command, frame.subcommand,
-                    frame.actualPayloadLength, result
+                    frame.actualPayloadLength, result, possibleKind, counterNote
                 )
                 val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
                 dfFrameMessages.add(0, timestamp + " · " + label + "\n" + frame.bytes.toHex())
@@ -651,6 +678,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun markActivityEvent(kind: String) {
+        val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+        val message = "MARCADOR MANUAL: $kind (no envía órdenes al reloj)"
+        addLog(message)
+        dfFrameMessages.add(0, "$timestamp · >>> $message")
+        while (dfFrameMessages.size > 40) dfFrameMessages.removeAt(dfFrameMessages.lastIndex)
+    }
+
     private fun addLog(message: String) {
         val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
         logLines.add(0, "$timestamp · $message")
@@ -676,7 +711,7 @@ private fun UltraApp(
     extraState: String, extraSubscribed: Boolean, extraBusy: Boolean,
     extraCount: Int, extraMessages: List<String>,
     rssiFor: (String) -> Int?,
-    onToggleUart: () -> Unit, onToggleExtra: () -> Unit,
+    onToggleUart: () -> Unit, onMarkEvent: (String) -> Unit, onToggleExtra: () -> Unit,
     onScan: () -> Unit, onDirectConnect: (String) -> Unit, onConnect: (BluetoothDevice) -> Unit,
     onDisconnect: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
@@ -702,7 +737,7 @@ private fun UltraApp(
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
                     uartBusy || extraBusy, uartCount, uartMessages,
-                    dfFrameCount, dfVerifiedCount, dfFrameMessages, onToggleUart,
+                    dfFrameCount, dfVerifiedCount, dfFrameMessages, onToggleUart, onMarkEvent,
                     extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
                 )
                 else -> LogScreen(logLines)
@@ -790,7 +825,7 @@ private fun ServicesScreen(
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
     dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
-    onToggleUart: () -> Unit,
+    onToggleUart: () -> Unit, onMarkEvent: (String) -> Unit,
     extraState: String, extraSubscribed: Boolean, extraCount: Int,
     extraMessages: List<String>, onToggleExtra: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
@@ -811,9 +846,23 @@ private fun ServicesScreen(
                 Text(if (uartSubscribed) "Detener recepción" else "Activar recepción UART")
             }
             Text(
-                "Escucha solamente datos enviados por el reloj. Reconstruye tramas DF divididas entre notificaciones. Sin comandos ni OTA.",
+                "Escucha datos enviados por el reloj. Las etiquetas de salud son hipótesis, NO mediciones confirmadas. Sin comandos ni OTA.",
                 fontSize = 11.sp, color = Muted
             )
+            Spacer(Modifier.height(8.dp))
+            Text("Antes de iniciar una medición EN EL RELOJ, marca el evento aquí:", fontSize = 12.sp, color = Muted)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    enabled = connected && uartSubscribed,
+                    onClick = { onMarkEvent("Inicio medición de pulso") },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Marcar pulso", fontSize = 12.sp) }
+                OutlinedButton(
+                    enabled = connected && uartSubscribed,
+                    onClick = { onMarkEvent("Inicio medición de presión") },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Marcar presión", fontSize = 12.sp) }
+            }
             if (dfFrameMessages.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 Button(onClick = {

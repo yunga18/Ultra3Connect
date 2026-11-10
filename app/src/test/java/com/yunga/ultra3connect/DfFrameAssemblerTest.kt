@@ -28,6 +28,19 @@ class DfFrameAssemblerTest {
         assertTrue(frame2.isValid)
     }
 
+    @Test fun hypotheticalCounterMatchesObservedSeventyNineSecondDelta() {
+        val assembler = DfFrameAssembler()
+        val earlier = hex("DF 00 11 C5 05 01 04 00 0C 35 6A 00 01 00 00 A2 27 00 00 00 56")
+        val later = hex("DF 00 11 85 05 01 05 00 0C 35 6A 00 01 00 00 A2 76 00 00 81 45")
+        val frame1 = assembler.append(earlier).single()
+        val frame2 = assembler.append(later).single()
+        assertTrue(frame1.isValid)
+        assertTrue(frame2.isValid)
+        assertEquals(79, frame2.counterCandidate16Be!! - frame1.counterCandidate16Be!!)
+        assertEquals(0x04, frame1.subcommand)
+        assertEquals(0x05, frame2.subcommand)
+    }
+
     @Test fun invalidChecksumIsReportedRatherThanSilentlyAccepted() {
         val assembler = DfFrameAssembler()
         val corrupted = hex("DF 00 11 B7 05 01 0E 00 0C 35 6A 00 01 00 00 9F 07 00 00 00 60")

@@ -18,6 +18,13 @@ class DfFrameAssembler {
         val lengthValid: Boolean get() =
             declaredLength == bytes.size - 4 && declaredPayloadLength == actualPayloadLength
         val isValid: Boolean get() = lengthValid && checksumValid
+
+        // Candidate only: observed two bytes advance by 79 when 78.7 s elapse.
+        // Their real meaning is not yet proven.
+        val counterCandidate16Be: Int?
+            get() = if (bytes.size >= 17) {
+                ((bytes[15].toInt() and 0xFF) shl 8) or (bytes[16].toInt() and 0xFF)
+            } else null
     }
 
     private val buffer = ArrayList<Byte>()
