@@ -164,3 +164,15 @@ Se analizó el registro HCI enviado por el propietario el 10 de noviembre de 202
 - En el `base.apk` proporcionado, `MsgPushHelper.getType` y `getNewType` asignan **Twitter = 5** y **WhatsApp = 8**. Coincide con la observación en el reloj.
 - El botón de prueba ahora envía tipo **8** y conserva intactos el mensaje ficticio, CMD 02 SUB 12, los fragmentos BLE y las comprobaciones.
 - Pruebas automatizadas actualizadas con el nuevo checksum; queda comprobar visualmente el icono de WhatsApp en el reloj real.
+
+## Versión 1.2.0 — Notificaciones reales opt-in y desplazamiento corregido
+- Nuevo servicio `WatchNotificationListener` declarado correctamente en el manifiesto para la autorización especial de Android **Acceso a notificaciones**.
+- Pestaña **Avisos**: concesión del permiso desde Ajustes, control maestro inicialmente **desactivado** y selección individual, también desactivada, de WhatsApp (incluye Business), Telegram, SMS/Mensajes y X/Twitter.
+- Únicamente las aplicaciones seleccionadas se reenvían al reloj por el protocolo DF CMD 02/SUB 12 que ya fue probado con texto ficticio.
+- Por privacidad se omiten avisos sin texto, resúmenes, mensajes con indicadores de contraseñas/códigos/OTP o números cortos de 4–8 dígitos. Nunca se guarda ni registra el contenido real de las notificaciones.
+- Deduplicación por clave y texto, cola limitada de 8 mensajes y envío BLE serializado por bloques; descarta si la conexión no está preparada.
+- Funciona mientras la Activity viva, BLE permanezca conectado y UART esté activado. **No ofrece garantía de reenvío en segundo plano o pantalla apagada**. Un servicio BLE foreground y compatibilidad de batería con HyperOS es trabajo posterior.
+- Se corrigió el desplazamiento vertical de **Servicios**, **Historial** y **Registro**, no solo de Dispositivo. El desplazamiento usa la altura disponible y preserva las pestañas fijas.
+- Para GATT 19 se indica que la desconexión fue remota (causa específica no determinada). Botón **Reconectar último Ultra 3** disponible al desconectarse, sin reintentos automáticos ni bucles.
+- Conserva la prueba de notificación manual con icono WhatsApp y la lectura de batería y salud existentes.
+- Cambios de sonido, tonos y firmware **no** forman parte de esta versión.
