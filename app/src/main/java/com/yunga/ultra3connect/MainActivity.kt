@@ -46,6 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.UUID
+import java.util.Date
+import java.util.Locale
+import java.text.SimpleDateFormat
 
 private val Bg = Color(0xFF090D12)
 private val Panel = Color(0xFF151D26)
@@ -77,6 +80,10 @@ class MainActivity : ComponentActivity() {
     private var uartPendingEnabled: Boolean? = null
     private var uartCount by mutableIntStateOf(0)
     private val uartMessages = mutableStateListOf<String>()
+    private val dfAssembler = DfFrameAssembler()
+    private var dfFrameCount by mutableIntStateOf(0)
+    private var dfVerifiedCount by mutableIntStateOf(0)
+    private val dfFrameMessages = mutableStateListOf<String>()
     private var extraState by mutableStateOf("Sin activar")
     private var extraSubscribed by mutableStateOf(false)
     private var extraPendingEnabled: Boolean? = null
@@ -290,6 +297,9 @@ class MainActivity : ComponentActivity() {
                     uartBusy = uartPendingEnabled != null,
                     uartCount = uartCount,
                     uartMessages = uartMessages.toList(),
+                    dfFrameCount = dfFrameCount,
+                    dfVerifiedCount = dfVerifiedCount,
+                    dfFrameMessages = dfFrameMessages.toList(),
                     extraState = extraState,
                     extraSubscribed = extraSubscribed,
                     extraBusy = extraPendingEnabled != null,
@@ -433,6 +443,10 @@ class MainActivity : ComponentActivity() {
             uartPendingEnabled = null
             uartCount = 0
             uartMessages.clear()
+            dfAssembler.reset()
+            dfFrameCount = 0
+            dfVerifiedCount = 0
+            dfFrameMessages.clear()
             uartState = "Sin activar"
             extraSubscribed = false
             extraPendingEnabled = null
@@ -497,6 +511,20 @@ class MainActivity : ComponentActivity() {
         }
         if (characteristic.uuid == UART_RX && characteristic.service.uuid == UART_SERVICE) {
             uartCount++
+            val completedFrames = dfAssembler.append(value)
+            for (frame in completedFrames) {
+                dfFrameCount++
+                if (frame.isValid) dfVerifiedCount++
+                val result = if (frame.isValid) "OK" else "INVALID"
+                val label = "CMD=%02X SUB=%02X payload=%d checksum=%s".format(
+                    Locale.US, frame.command, frame.subcommand,
+                    frame.actualPayloadLength, result
+                )
+                val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+                dfFrameMessages.add(0, timestamp + " · " + label + "\n" + frame.bytes.toHex())
+                while (dfFrameMessages.size > 40) dfFrameMessages.removeAt(dfFrameMessages.lastIndex)
+                addLog("Trama DF reconstruida: " + label + " · " + frame.bytes.toHex())
+            }
             val ascii = value.joinToString("") { b ->
                 val ch = b.toInt() and 0xFF
                 if (ch in 32..126) ch.toChar().toString() else "."
@@ -624,7 +652,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addLog(message: String) {
-        logLines.add(0, message)
+        val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+        logLines.add(0, "$timestamp · $message")
         while (logLines.size > 80) logLines.removeAt(logLines.lastIndex)
     }
 
@@ -643,6 +672,7 @@ private fun UltraApp(
     battery: String, logLines: List<String>, characteristicValue: String,
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
     uartCount: Int, uartMessages: List<String>,
+    dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
     extraState: String, extraSubscribed: Boolean, extraBusy: Boolean,
     extraCount: Int, extraMessages: List<String>,
     rssiFor: (String) -> Int?,
@@ -671,7 +701,8 @@ private fun UltraApp(
                     battery, rssiFor, onScan, onDirectConnect, onConnect, onDisconnect)
                 1 -> ServicesScreen(
                     services, characteristicValue, connected, uartState, uartSubscribed,
-                    uartBusy || extraBusy, uartCount, uartMessages, onToggleUart,
+                    uartBusy || extraBusy, uartCount, uartMessages,
+                    dfFrameCount, dfVerifiedCount, dfFrameMessages, onToggleUart,
                     extraState, extraSubscribed, extraCount, extraMessages, onToggleExtra, onRead
                 )
                 else -> LogScreen(logLines)
@@ -757,17 +788,21 @@ private fun DeviceScreen(
 private fun ServicesScreen(
     services: List<BluetoothGattService>, value: String, connected: Boolean,
     uartState: String, uartSubscribed: Boolean, uartBusy: Boolean,
-    uartCount: Int, uartMessages: List<String>, onToggleUart: () -> Unit,
+    uartCount: Int, uartMessages: List<String>,
+    dfFrameCount: Int, dfVerifiedCount: Int, dfFrameMessages: List<String>,
+    onToggleUart: () -> Unit,
     extraState: String, extraSubscribed: Boolean, extraCount: Int,
     extraMessages: List<String>, onToggleExtra: () -> Unit,
     onRead: (BluetoothGattService, BluetoothGattCharacteristic) -> Unit
 ) {
+    val context = LocalContext.current
     Text("RECEPCIÓN UART", color = Muted, fontSize = 11.sp, letterSpacing = 1.5.sp)
     Spacer(Modifier.height(8.dp))
     Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
             Text(uartState, color = if (uartSubscribed) Green else Muted, fontWeight = FontWeight.SemiBold)
-            Text("Paquetes recibidos: $uartCount", fontSize = 13.sp, color = Muted)
+            Text("Fragmentos UART recibidos: $uartCount", fontSize = 13.sp, color = Muted)
+            Text("Tramas DF: $dfFrameCount · válidas: $dfVerifiedCount", fontSize = 13.sp, color = Green)
             Spacer(Modifier.height(8.dp))
             Button(
                 enabled = connected && !uartBusy && services.any { it.uuid == UART_SERVICE },
@@ -776,9 +811,23 @@ private fun ServicesScreen(
                 Text(if (uartSubscribed) "Detener recepción" else "Activar recepción UART")
             }
             Text(
-                "Escucha solamente datos enviados por el reloj. No envía órdenes ni usa OTA.",
+                "Escucha solamente datos enviados por el reloj. Reconstruye tramas DF divididas entre notificaciones. Sin comandos ni OTA.",
                 fontSize = 11.sp, color = Muted
             )
+            if (dfFrameMessages.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText(
+                        "Ultra 3 Connect · Tramas DF",
+                        dfFrameMessages.asReversed().joinToString("\n\n")
+                    ))
+                }) { Text("Copiar tramas DF") }
+                dfFrameMessages.take(4).forEach { message ->
+                    Text(message, fontSize = 11.sp, color = Green)
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
             if (uartMessages.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 uartMessages.take(5).forEach { message ->

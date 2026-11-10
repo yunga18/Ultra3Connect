@@ -94,3 +94,12 @@ El APK no se ha compilado ni probado todavía; GitHub Actions mostrará cualquie
 - Evita iniciar dos escrituras de CCCD simultáneas.
 - La pestaña **Registro** tiene un botón **Copiar registro** para compartir diagnósticos. Puede contener direcciones BLE y datos recibidos, revísalos antes de compartirlos.
 - Para probar, conecta el reloj, activa UART y FF14, e interactúa con la pantalla del reloj; la ausencia de paquetes no implica que BLE esté roto.
+
+## Versión 0.6.0 — Reconstrucción de tramas DF verificadas
+- Un nuevo módulo Kotlin `DfFrameAssembler` reconstruye tramas `0xDF` distribuidas en fragmentos GATT (incluidos los casos de 20+1 bytes).
+- Reconoce longitud, CMD, SUB, longitud del payload y checksum aditivo (sumatoria de bytes excepto el byte 3, mod 256).
+- Cuenta tramas y valida longitud/checksum, mostrando los últimos mensajes y permitiendo copiar sus bytes completos.
+- Conserva fragmentos originales y eventos con marcas de hora de milisegundos en el registro.
+- Pruebas unitarias incluyen los dos mensajes reales capturados, reconstruidos con bytes finales `61` y `5A`.
+- No atribuye significado definitivo a CMD 05/SUB 0E o SUB 04 ni envía comandos a las características TX u OTA.
+- Nota: si otro reloj usa un protocolo diferente, el monitor puede no reconocer sus mensajes.
