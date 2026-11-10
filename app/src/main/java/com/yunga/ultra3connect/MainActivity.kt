@@ -1185,6 +1185,13 @@ private fun DeviceScreen(
                     Text("Conectar Ultra 3 detectado")
                 }
             }
+            if (!connected && selectedAddress != null) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { onDirectConnect(selectedAddress) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Reconectar último Ultra 3") }
+            }
         }
     }
     Spacer(Modifier.height(12.dp))
